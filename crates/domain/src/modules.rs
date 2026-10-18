@@ -1,4 +1,6 @@
 //! Shared native-query outcomes and observations; no provider I/O or logging.
+pub mod control;
+
 use crate::{
     state::{Reachability, State},
     sync::MAX_REVISION,

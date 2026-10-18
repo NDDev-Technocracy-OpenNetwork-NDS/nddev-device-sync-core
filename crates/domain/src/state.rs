@@ -34,6 +34,12 @@ pub enum State {
         checked_at_ms: Option<u64>,
         error_class: Option<String>,
     },
+    /// Desired state is its own entity. Automatic observation publication may
+    /// never replace consent or re-enable a locally disabled module.
+    ModuleConfiguration {
+        module_id: String,
+        configuration: crate::modules::control::Configuration,
+    },
     Account {
         auth_method: String,
         checked_at_ms: u64,
@@ -73,10 +79,10 @@ impl Snapshot {
         };
         if !valid_entity
             || self.schema_version
-                != if kind == EntityKind::RepositoryState {
-                    2
-                } else {
-                    1
+                != match (&self.data, kind) {
+                    (State::Repository { .. }, EntityKind::RepositoryState)
+                    | (State::ModuleConfiguration { .. }, EntityKind::ModuleState) => 2,
+                    _ => 1,
                 }
             || self.observed_at_ms == 0
             || self.observed_at_ms > MAX_REVISION
@@ -112,6 +118,7 @@ impl Snapshot {
                 EntityKind::ModuleState,
             ) => {
                 ModuleId::new(module_id.clone()).is_ok()
+                    && !module_id.ends_with(":configuration")
                     && version(release)
                     && entity == format!("{}:{module_id}", writer.as_str())
                     && checked_at_ms.is_none_or(|time| time > 0 && time <= self.observed_at_ms)
@@ -135,6 +142,11 @@ impl Snapshot {
                             *configured && checked_at_ms.is_some() && error_class.is_some()
                         }
                     }
+            }
+            (State::ModuleConfiguration { module_id, .. }, EntityKind::ModuleState) => {
+                ModuleId::new(module_id.clone()).is_ok()
+                    && !module_id.contains(':')
+                    && entity == format!("{}:{module_id}:configuration", writer.as_str())
             }
             (
                 State::Account {
@@ -181,6 +193,50 @@ impl Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn module_configuration_is_writer_scoped_and_separate_from_observations() {
+        let writer = DeviceId::new("device").unwrap();
+        let mut value = Snapshot {
+            schema_version: 2,
+            observed_at_ms: 100,
+            data: State::ModuleConfiguration {
+                module_id: "gds".into(),
+                configuration: Default::default(),
+            },
+        };
+        assert!(
+            value
+                .validate(&writer, EntityKind::ModuleState, "device:gds:configuration")
+                .is_ok()
+        );
+        for id in [
+            "device:gds",
+            "other:gds:configuration",
+            "device:rds:configuration",
+        ] {
+            assert!(
+                value
+                    .validate(&writer, EntityKind::ModuleState, id)
+                    .is_err()
+            );
+        }
+        value.schema_version = 1;
+        assert!(
+            value
+                .validate(&writer, EntityKind::ModuleState, "device:gds:configuration")
+                .is_err()
+        );
+        let legacy: Snapshot = serde_json::from_str(
+            r#"{"schema_version":1,"observed_at_ms":100,"data":{"kind":"module","module_id":"gds","version":"1","configured":false,"reachability":"not_checked","checked_at_ms":null,"error_class":null}}"#,
+        )
+        .unwrap();
+        assert!(
+            legacy
+                .validate(&writer, EntityKind::ModuleState, "device:gds")
+                .is_ok()
+        );
+    }
+
     #[test]
     fn device_observations_accept_every_supported_platform_and_reject_unknowns() {
         let writer = DeviceId::new("device").unwrap();
