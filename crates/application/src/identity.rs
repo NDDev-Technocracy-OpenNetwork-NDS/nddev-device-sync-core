@@ -57,6 +57,25 @@ pub struct IssuedSession {
     pub token: SecretText,
     pub session: Session,
 }
+/// Metadata from a successful device-bound server verification. The identifier
+/// distinguishes retained sessions; it cannot authenticate any request.
+pub struct SessionRenewal {
+    pub session: Session,
+    pub verified_at_ms: u64,
+    pub authorization_id: [u8; 32],
+}
+
+pub trait SessionRenewalStore: Send + Sync {
+    /// Recheck current session, active membership and device, consume the signed
+    /// request nonce and renew under one authorization transaction. Preserve
+    /// authenticated_at_ms. Return the actual committed verification clock.
+    fn renew_session(
+        &self,
+        authorization: &AuthenticatedSession,
+        signed: &crate::sync::SignedRequest,
+        now: u64,
+    ) -> impl Future<Output = Result<(Session, u64), crate::sync::SyncError>> + Send;
+}
 pub struct EmailReceipt {
     pub id: String,
     pub expires_in_seconds: u64,
@@ -582,6 +601,39 @@ impl<S: IdentityStore, C: IdentityCrypto, E: EmailDelivery, G: GithubIdentity, F
             return Err(IdentityError::Denied);
         }
         Ok(AuthenticatedSession { session, binding })
+    }
+
+    pub async fn renew_session(
+        &self,
+        authorization: &AuthenticatedSession,
+        signed: &crate::sync::SignedRequest,
+        now: u64,
+    ) -> Result<SessionRenewal, crate::sync::SyncError>
+    where
+        S: SessionRenewalStore,
+    {
+        use crate::sync::SyncError;
+        if !authorization.session.active(now) {
+            return Err(SyncError::Denied);
+        }
+        let (session, verified_at_ms) =
+            self.store.renew_session(authorization, signed, now).await?;
+        if session.owner != authorization.session.owner
+            || session.method != authorization.session.method
+            || session.authenticated_at_ms != authorization.session.authenticated_at_ms
+            || verified_at_ms < now
+            || verified_at_ms.checked_add(SESSION_LIFETIME_MS) != Some(session.expires_at_ms)
+        {
+            return Err(SyncError::Unavailable);
+        }
+        Ok(SessionRenewal {
+            session,
+            verified_at_ms,
+            authorization_id: self
+                .crypto
+                .protect("session_authorization_id", &[&authorization.binding.0])
+                .0,
+        })
     }
     pub async fn revoke(&self, token: &str, now: u64) -> Result<(), IdentityError> {
         if !valid_opaque(token) {

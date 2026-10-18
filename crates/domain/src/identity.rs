@@ -8,7 +8,7 @@ pub const OTP_RESEND_MS: u64 = 60_000;
 pub const OTP_ATTEMPTS: u8 = 5;
 pub const GITHUB_LIFETIME_MS: u64 = 300_000;
 pub const GITHUB_POLL_MS: u64 = 2_000;
-pub const SESSION_LIFETIME_MS: u64 = 28_800_000;
+pub const SESSION_LIFETIME_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
 pub const RECENT_AUTHENTICATION_MS: u64 = 300_000;
 pub const MAX_SESSIONS: usize = 32;
 pub const MAX_PENDING_EMAIL: usize = 1024;
@@ -124,6 +124,8 @@ pub struct Owner {
 pub struct Session {
     pub owner: Owner,
     pub method: AuthMethod,
+    /// Original sign-in proof. Extending device authority must not refresh it.
+    pub authenticated_at_ms: u64,
     pub expires_at_ms: u64,
 }
 
@@ -139,22 +141,37 @@ impl Session {
         Ok(Self {
             owner,
             method,
+            authenticated_at_ms: now,
             expires_at_ms: now
                 .checked_add(SESSION_LIFETIME_MS)
                 .ok_or(IdentityError::InvalidInput)?,
         })
     }
     pub fn active(&self, now: u64) -> bool {
-        now < self.expires_at_ms
+        self.authenticated_at_ms <= now && now < self.expires_at_ms
+    }
+    /// A current device proof can renew authority, never the original sign-in.
+    /// Storage must recheck the retained session, membership and active device
+    /// transactionally before applying this decision.
+    pub fn renewed(&self, now: u64) -> Result<Self, IdentityError> {
+        if !self.active(now) {
+            return Err(IdentityError::Denied);
+        }
+        let expires_at_ms = now
+            .checked_add(SESSION_LIFETIME_MS)
+            .ok_or(IdentityError::InvalidInput)?;
+        if expires_at_ms < self.expires_at_ms {
+            return Err(IdentityError::Denied);
+        }
+        Ok(Self {
+            expires_at_ms,
+            ..self.clone()
+        })
     }
     /// Sensitive credential changes require a recent proof, while ordinary
     /// account/session authorization retains its original lifetime.
     pub fn recently_authenticated(&self, now: u64) -> bool {
-        self.active(now)
-            && self
-                .expires_at_ms
-                .checked_sub(SESSION_LIFETIME_MS)
-                .is_some_and(|issued| now >= issued && now - issued <= RECENT_AUTHENTICATION_MS)
+        self.active(now) && now - self.authenticated_at_ms <= RECENT_AUTHENTICATION_MS
     }
 }
 
@@ -170,6 +187,13 @@ pub struct CachedDeviceAuthorization {
     pub device_id: crate::DeviceId,
     pub verified_at_ms: u64,
     pub expires_at_ms: u64,
+    /// Identity of the retained server session, not an authentication token.
+    /// Missing on an older protected grant; it cannot authorize local renewal.
+    #[serde(default)]
+    pub authorization_id: Option<[u8; 32]>,
+    /// Protected clock observation. Advancing it cannot change grant validity.
+    #[serde(default)]
+    pub clock_observed_at_ms: u64,
 }
 
 impl CachedDeviceAuthorization {
@@ -187,14 +211,58 @@ impl CachedDeviceAuthorization {
             || self.user_id != owner.user_id
             || self.tenant_id != owner.tenant_id
             || &self.device_id != device
-            || self.expires_at_ms <= self.verified_at_ms
-            || self.expires_at_ms - self.verified_at_ms > SESSION_LIFETIME_MS
-            || now < self.verified_at_ms
-            || now >= self.expires_at_ms
+            || !self.permits_time(now)
         {
             return Err(IdentityError::Denied);
         }
         Ok(())
+    }
+
+    fn permits_time(&self, now: u64) -> bool {
+        self.expires_at_ms
+            .checked_sub(self.verified_at_ms)
+            .is_some_and(|duration| (1..=SESSION_LIFETIME_MS).contains(&duration))
+            && (self.clock_observed_at_ms == 0 || self.clock_observed_at_ms >= self.verified_at_ms)
+            && now >= self.verified_at_ms.max(self.clock_observed_at_ms)
+            && now < self.expires_at_ms
+    }
+
+    /// Record a local clock only inside the established validity interval.
+    /// This decision cannot mint a grant or extend its original expiry.
+    pub fn observe_clock(&mut self, now: u64) -> Result<(), IdentityError> {
+        if !self.permits_time(now) {
+            return Err(IdentityError::Denied);
+        }
+        self.clock_observed_at_ms = now;
+        Ok(())
+    }
+
+    /// Continue an already captured use after a protected slot update. The
+    /// application additionally checks its durable sign-out generation and
+    /// credential binding. The captured use retains its own original deadline.
+    pub fn continues(&self, original: &Self, now: u64) -> bool {
+        let same_session = match (self.authorization_id, original.authorization_id) {
+            (Some(current), Some(previous)) => current == previous,
+            (None, None) => {
+                self.verified_at_ms == original.verified_at_ms
+                    && self.expires_at_ms == original.expires_at_ms
+            }
+            _ => false,
+        };
+        let owner = Owner {
+            user_id: original.user_id.clone(),
+            tenant_id: original.tenant_id.clone(),
+        };
+        same_session
+            && self.verified_at_ms >= original.verified_at_ms
+            && self.expires_at_ms >= original.expires_at_ms
+            && self.clock_observed_at_ms >= original.clock_observed_at_ms
+            && original
+                .authorize_offline(&original.origin, &owner, &original.device_id, now)
+                .is_ok()
+            && self
+                .authorize_offline(&original.origin, &owner, &original.device_id, now)
+                .is_ok()
     }
 }
 
@@ -480,6 +548,169 @@ mod tests {
         assert!(session.active(issued + RECENT_AUTHENTICATION_MS + 1));
         assert!(!session.recently_authenticated(issued + SESSION_LIFETIME_MS));
     }
+
+    #[test]
+    fn changed_expiry_cannot_refresh_the_original_authentication_proof() {
+        let issued = 1_000_000;
+        let mut session = Session::new(
+            Owner {
+                user_id: UserId::new("owner").unwrap(),
+                tenant_id: TenantId::new("tenant").unwrap(),
+            },
+            AuthMethod::Passkey,
+            issued,
+        )
+        .unwrap();
+        let later = issued + RECENT_AUTHENTICATION_MS + 1;
+        session.expires_at_ms = later + SESSION_LIFETIME_MS;
+        assert!(session.active(later));
+        assert_eq!(session.authenticated_at_ms, issued);
+        assert!(!session.recently_authenticated(later));
+        assert!(!session.active(issued - 1));
+        assert!(!session.active(session.expires_at_ms));
+    }
+
+    #[test]
+    fn renewal_keeps_recent_sign_in_separate_from_seven_day_authority() {
+        assert_eq!(SESSION_LIFETIME_MS, 604_800_000);
+        let issued = 1_000_000;
+        let session = Session::new(github_identity().owner, AuthMethod::EmailOtp, issued).unwrap();
+        let verified = issued + RECENT_AUTHENTICATION_MS + 1;
+        let renewed = session.renewed(verified).unwrap();
+        assert_eq!(renewed.authenticated_at_ms, issued);
+        assert_eq!(renewed.expires_at_ms, verified + 604_800_000);
+        assert!(!renewed.recently_authenticated(verified));
+        assert!(renewed.active(renewed.expires_at_ms - 1));
+        assert!(!renewed.active(renewed.expires_at_ms));
+        assert_eq!(session.renewed(issued - 1), Err(IdentityError::Denied));
+        assert_eq!(
+            session.renewed(session.expires_at_ms),
+            Err(IdentityError::Denied)
+        );
+        assert_eq!(renewed.renewed(verified - 1), Err(IdentityError::Denied));
+        let near_limit = Session::new(
+            github_identity().owner,
+            AuthMethod::Passkey,
+            u64::MAX - SESSION_LIFETIME_MS - 1,
+        )
+        .unwrap();
+        assert_eq!(
+            near_limit.renewed(near_limit.authenticated_at_ms + 2),
+            Err(IdentityError::InvalidInput)
+        );
+    }
+
+    fn cached_grant(authorization_id: Option<[u8; 32]>) -> CachedDeviceAuthorization {
+        CachedDeviceAuthorization {
+            origin: "https://instance.example/".into(),
+            user_id: UserId::new("owner").unwrap(),
+            tenant_id: TenantId::new("tenant").unwrap(),
+            device_id: crate::DeviceId::new("device").unwrap(),
+            verified_at_ms: 10_000,
+            expires_at_ms: 10_000 + 604_800_000,
+            authorization_id,
+            clock_observed_at_ms: 0,
+        }
+    }
+
+    #[test]
+    fn protected_clock_observations_cannot_extend_the_seven_day_grant() {
+        let mut grant = cached_grant(Some([1; 32]));
+        let verified = grant.verified_at_ms;
+        let expires = grant.expires_at_ms;
+        for now in [verified, verified + 300_000, expires - 1] {
+            grant.observe_clock(now).unwrap();
+            assert_eq!(grant.verified_at_ms, verified);
+            assert_eq!(grant.expires_at_ms, expires);
+        }
+        for now in [expires - 2, expires, expires + 1, u64::MAX] {
+            assert_eq!(grant.observe_clock(now), Err(IdentityError::Denied));
+            assert_eq!(grant.expires_at_ms, expires);
+        }
+    }
+
+    #[test]
+    fn restored_clock_observation_rejects_a_rollback_inside_the_grant() {
+        let mut grant = cached_grant(None);
+        grant.observe_clock(50_000).unwrap();
+        let restored: CachedDeviceAuthorization =
+            serde_json::from_slice(&serde_json::to_vec(&grant).unwrap()).unwrap();
+        let owner = Owner {
+            user_id: restored.user_id.clone(),
+            tenant_id: restored.tenant_id.clone(),
+        };
+        assert_eq!(
+            restored.authorize_offline(&restored.origin, &owner, &restored.device_id, 49_999),
+            Err(IdentityError::Denied)
+        );
+        assert!(
+            restored
+                .authorize_offline(&restored.origin, &owner, &restored.device_id, 50_000)
+                .is_ok()
+        );
+        grant.clock_observed_at_ms = grant.verified_at_ms - 1;
+        assert_eq!(grant.observe_clock(50_000), Err(IdentityError::Denied));
+    }
+
+    #[test]
+    fn old_protected_json_retains_its_original_shorter_expiry() {
+        let mut grant: CachedDeviceAuthorization = serde_json::from_value(serde_json::json!({
+            "origin":"https://instance.example/", "user_id":"owner", "tenant_id":"tenant",
+            "device_id":"device", "verified_at_ms":10_000, "expires_at_ms":28_810_000
+        }))
+        .unwrap();
+        assert_eq!(grant.authorization_id, None);
+        assert_eq!(grant.clock_observed_at_ms, 0);
+        grant.observe_clock(28_809_999).unwrap();
+        assert_eq!(grant.expires_at_ms, 28_810_000);
+        assert_eq!(grant.observe_clock(28_810_000), Err(IdentityError::Denied));
+    }
+
+    #[test]
+    fn a_captured_use_keeps_its_original_deadline_after_same_session_renewal() {
+        let original = cached_grant(Some([1; 32]));
+        let mut renewed = original.clone();
+        renewed.verified_at_ms += 1_000;
+        renewed.expires_at_ms += 1_000;
+        renewed.clock_observed_at_ms = renewed.verified_at_ms;
+        assert!(renewed.continues(&original, renewed.verified_at_ms));
+        assert!(renewed.continues(&original, original.expires_at_ms - 1));
+        assert!(!renewed.continues(&original, original.expires_at_ms));
+        assert!(renewed.permits_time(original.expires_at_ms));
+    }
+
+    #[test]
+    fn captured_authority_cannot_cross_scope_session_or_shortening() {
+        let original = cached_grant(Some([1; 32]));
+        for change in 0..8 {
+            let mut changed = original.clone();
+            match change {
+                0 => changed.origin = "https://other.example/".into(),
+                1 => changed.user_id = UserId::new("other").unwrap(),
+                2 => changed.tenant_id = TenantId::new("other").unwrap(),
+                3 => changed.device_id = crate::DeviceId::new("other").unwrap(),
+                4 => changed.authorization_id = Some([2; 32]),
+                5 => changed.authorization_id = None,
+                6 => changed.verified_at_ms -= 1,
+                _ => changed.expires_at_ms -= 1,
+            }
+            assert!(!changed.continues(&original, original.verified_at_ms + 1));
+        }
+    }
+
+    #[test]
+    fn an_old_grant_allows_clock_checkpoints_but_not_a_local_renewal() {
+        let original = cached_grant(None);
+        let mut checkpoint = original.clone();
+        checkpoint
+            .observe_clock(original.verified_at_ms + 1)
+            .unwrap();
+        assert!(checkpoint.continues(&original, checkpoint.clock_observed_at_ms));
+        let mut changed = checkpoint.clone();
+        changed.verified_at_ms += 1;
+        changed.expires_at_ms += 1;
+        assert!(!changed.continues(&original, checkpoint.clock_observed_at_ms));
+    }
     #[test]
     fn cached_authorization_is_scoped_and_expires_without_online_authority() {
         let owner = Owner {
@@ -495,6 +726,8 @@ mod tests {
             device_id: device.clone(),
             verified_at_ms: 10_000,
             expires_at_ms: 20_000,
+            authorization_id: None,
+            clock_observed_at_ms: 0,
         };
         for now in [10_000, 19_999] {
             assert!(
@@ -556,6 +789,8 @@ mod tests {
             device_id: device.clone(),
             verified_at_ms: 1,
             expires_at_ms: SESSION_LIFETIME_MS + 1,
+            authorization_id: None,
+            clock_observed_at_ms: 0,
         };
         assert!(
             grant
