@@ -16,12 +16,24 @@ pub enum ClientLifecycle {
 }
 
 impl ClientLifecycle {
+    /// Admission for interactive work, including capture and catalog actions.
     pub fn permits_work(self, platform: Platform) -> bool {
         self == Self::Resumed
             || self == Self::Inactive
                 && matches!(
                     platform,
                     Platform::Linux | Platform::Macos | Platform::Windows | Platform::Web
+                )
+    }
+
+    /// A running desktop process can reconcile while its windows are hidden.
+    /// This does not grant capture, an OS background task or detached ownership.
+    pub fn permits_replication(self, platform: Platform) -> bool {
+        self.permits_work(platform)
+            || self == Self::Hidden
+                && matches!(
+                    platform,
+                    Platform::Linux | Platform::Macos | Platform::Windows
                 )
     }
 }
@@ -280,6 +292,29 @@ mod tests {
                 ClientLifecycle::Paused,
             ] {
                 assert!(!state.permits_work(platform));
+            }
+        }
+    }
+
+    #[test]
+    fn hidden_desktop_replication_does_not_grant_interactive_or_os_background_work() {
+        for platform in Platform::ALL {
+            for state in [ClientLifecycle::Resumed, ClientLifecycle::Inactive] {
+                assert_eq!(
+                    state.permits_replication(platform),
+                    state.permits_work(platform)
+                );
+            }
+            assert!(!ClientLifecycle::Hidden.permits_work(platform));
+            assert_eq!(
+                ClientLifecycle::Hidden.permits_replication(platform),
+                matches!(
+                    platform,
+                    Platform::Linux | Platform::Macos | Platform::Windows
+                )
+            );
+            for state in [ClientLifecycle::Paused, ClientLifecycle::Detached] {
+                assert!(!state.permits_replication(platform));
             }
         }
     }
