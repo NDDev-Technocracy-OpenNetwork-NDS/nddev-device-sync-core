@@ -124,6 +124,8 @@ pub struct Owner {
 pub struct Session {
     pub owner: Owner,
     pub method: AuthMethod,
+    /// Original sign-in proof. Extending device authority must not refresh it.
+    pub authenticated_at_ms: u64,
     pub expires_at_ms: u64,
 }
 
@@ -139,22 +141,19 @@ impl Session {
         Ok(Self {
             owner,
             method,
+            authenticated_at_ms: now,
             expires_at_ms: now
                 .checked_add(SESSION_LIFETIME_MS)
                 .ok_or(IdentityError::InvalidInput)?,
         })
     }
     pub fn active(&self, now: u64) -> bool {
-        now < self.expires_at_ms
+        self.authenticated_at_ms <= now && now < self.expires_at_ms
     }
     /// Sensitive credential changes require a recent proof, while ordinary
     /// account/session authorization retains its original lifetime.
     pub fn recently_authenticated(&self, now: u64) -> bool {
-        self.active(now)
-            && self
-                .expires_at_ms
-                .checked_sub(SESSION_LIFETIME_MS)
-                .is_some_and(|issued| now >= issued && now - issued <= RECENT_AUTHENTICATION_MS)
+        self.active(now) && now - self.authenticated_at_ms <= RECENT_AUTHENTICATION_MS
     }
 }
 
@@ -479,6 +478,27 @@ mod tests {
         assert!(!session.recently_authenticated(issued + RECENT_AUTHENTICATION_MS + 1));
         assert!(session.active(issued + RECENT_AUTHENTICATION_MS + 1));
         assert!(!session.recently_authenticated(issued + SESSION_LIFETIME_MS));
+    }
+
+    #[test]
+    fn changed_expiry_cannot_refresh_the_original_authentication_proof() {
+        let issued = 1_000_000;
+        let mut session = Session::new(
+            Owner {
+                user_id: UserId::new("owner").unwrap(),
+                tenant_id: TenantId::new("tenant").unwrap(),
+            },
+            AuthMethod::Passkey,
+            issued,
+        )
+        .unwrap();
+        let later = issued + RECENT_AUTHENTICATION_MS + 1;
+        session.expires_at_ms = later + SESSION_LIFETIME_MS;
+        assert!(session.active(later));
+        assert_eq!(session.authenticated_at_ms, issued);
+        assert!(!session.recently_authenticated(later));
+        assert!(!session.active(issued - 1));
+        assert!(!session.active(session.expires_at_ms));
     }
     #[test]
     fn cached_authorization_is_scoped_and_expires_without_online_authority() {
