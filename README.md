@@ -65,3 +65,9 @@ just check
 `just check` requires cargo-nextest 0.9.148, cargo-audit 0.22.2 and cargo-deny
 0.20.2, pinned in CI. It checks formatting, locked workspace tests and doctests,
 Clippy, known dependency advisories and the reviewed license/source policy.
+
+CI uses the native Rust module of STD-0004 at the immutable action revision in
+`.github/workflows/check.yml`. The caller contract retains Nextest, doctests,
+Clippy and dependency checks; native JUnit results reject empty test runs.
+Source checks run on dev/main PR candidates. `just check` remains the local entry.
+This Git-sourced library selects source validation, with no deployment target.

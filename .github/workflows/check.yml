@@ -3,9 +3,6 @@ name: NDS checks
 on:
   pull_request:
     branches: [main, dev]
-  push:
-    branches: [main, dev]
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -22,9 +19,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3
-        with:
-          just-version: '1.59.0'
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
       - name: Install pinned quality tools
@@ -32,5 +26,11 @@ jobs:
           cargo install --locked --version 0.9.148 cargo-nextest
           cargo install --locked --version 0.22.2 cargo-audit
           cargo install --locked --version 0.20.2 cargo-deny
-      - name: Check formatting, tests, Clippy and dependency policy
-        run: just check
+      - name: Run the STD-0004 native Rust contract
+        id: native
+        uses: NDDev-Technocracy-Standarts/std-0004-ci-cd-workflows/.github/actions/ci@55e8f06fdba354cf3c14291f49b27ecae9e5abb2 # std-0004-v0.2.0
+      - name: Require complete native results
+        if: ${{ !cancelled() }}
+        env:
+          STATUS: ${{ steps.native.outputs.status }}
+        run: test "$STATUS" = success
