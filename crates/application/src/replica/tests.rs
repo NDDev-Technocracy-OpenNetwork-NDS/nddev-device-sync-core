@@ -4,6 +4,90 @@ use std::{
     collections::VecDeque,
     task::{Context, Poll, Waker},
 };
+
+#[test]
+fn follower_requires_actual_head_and_complete_durable_state() {
+    let before = InstallVersion {
+        cursor: 4,
+        known_committed_seq: 4,
+        local_revision: 8,
+    };
+    let history = HistoryVersion {
+        head: 6,
+        floor: 2,
+        base: 2,
+    };
+    let now = InstallVersion {
+        cursor: 6,
+        known_committed_seq: 6,
+        local_revision: 10,
+    };
+    assert!(!follower_caught_up(before, before, history, 0, false).unwrap());
+    assert!(follower_caught_up(before, now, history, 0, false).unwrap());
+    assert!(!follower_caught_up(before, now, history, 1, false).unwrap());
+    assert!(!follower_caught_up(before, now, history, 0, true).unwrap());
+    assert!(
+        !follower_caught_up(
+            before,
+            InstallVersion {
+                known_committed_seq: 7,
+                ..now
+            },
+            history,
+            0,
+            false
+        )
+        .unwrap()
+    );
+    // The actual owner may advance again after the remote observation.
+    assert!(
+        follower_caught_up(
+            before,
+            InstallVersion {
+                cursor: 7,
+                known_committed_seq: 7,
+                ..now
+            },
+            history,
+            0,
+            false
+        )
+        .unwrap()
+    );
+    for invalid in [
+        InstallVersion { cursor: 3, ..now },
+        InstallVersion {
+            known_committed_seq: 3,
+            ..now
+        },
+        InstallVersion {
+            local_revision: 7,
+            ..now
+        },
+        InstallVersion {
+            cursor: MAX_REVISION + 1,
+            ..now
+        },
+    ] {
+        assert!(follower_caught_up(before, invalid, history, 0, false).is_err());
+    }
+    assert!(
+        follower_caught_up(
+            before,
+            now,
+            HistoryVersion {
+                head: 3,
+                floor: 2,
+                base: 2
+            },
+            0,
+            false
+        )
+        .is_err()
+    );
+    assert!(follower_caught_up(before, now, history, u32::MAX, false).is_err());
+}
+
 #[derive(Clone, Copy)]
 struct Saved {
     base: BaseProgress,
