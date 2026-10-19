@@ -129,6 +129,37 @@ pub enum CapacityProbeOutcome {
     Unknown,
     NoEligibleWork,
 }
+
+/// A follower can observe the existing replica without running reconciliation.
+/// The adapter supplies one authenticated history observation between two
+/// atomic journal reads, under its unchanged protected authorization fence.
+/// This comparison issues no grant and does not renew offline authority.
+pub fn follower_caught_up(
+    before: InstallVersion,
+    now: InstallVersion,
+    history: HistoryVersion,
+    pending: u32,
+    terminal_unknown: bool,
+) -> Result<bool, SyncError> {
+    history.validate()?;
+    if before.cursor > MAX_REVISION
+        || before.known_committed_seq > MAX_REVISION
+        || now.cursor > MAX_REVISION
+        || now.known_committed_seq > MAX_REVISION
+        || now.local_revision < before.local_revision
+        || now.cursor < before.cursor
+        || now.known_committed_seq < before.known_committed_seq
+        || history.head < before.cursor
+        || u64::from(pending) > MAX_OPERATIONS
+    {
+        return Err(SyncError::Invalid);
+    }
+    Ok(now.cursor >= history.head
+        && now.known_committed_seq <= now.cursor
+        && pending == 0
+        && !terminal_unknown)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ReconcileMode {
     Full,
