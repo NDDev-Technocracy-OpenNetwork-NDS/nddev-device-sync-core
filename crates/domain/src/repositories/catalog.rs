@@ -8,6 +8,9 @@ pub mod observations;
 
 pub const REPOSITORIES_PER_PAGE: usize = 25;
 pub const MAX_CATALOG_PAGES: u8 = 64;
+/// One encrypted source choice per NDS owner; device consent is independent.
+/// Outside observation keys so a preference can never become a repository fact.
+pub const SOURCE_ENTITY_ID: &str = "gds:source";
 
 /// Existing vault revision and pending operation identity, not a second counter.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +42,37 @@ impl CredentialSelection {
     }
     pub fn pending_id(&self) -> Option<&str> {
         self.pending_id.as_deref()
+    }
+    /// Acknowledgement advances metadata, not the selected immutable secret.
+    /// A queued successor can also observe its predecessor's acknowledgement.
+    /// The adapter must separately reject conflicts/deletion and authenticate
+    /// the original body; this predicate never authorizes a different operation.
+    pub fn matches_record(
+        &self,
+        operation: &crate::sync::Operation,
+        revision: u64,
+        pending_id: Option<&str>,
+    ) -> bool {
+        if self.validate().is_err()
+            || operation.validate_header().is_err()
+            || revision > MAX_REVISION
+            || operation.entity_kind != crate::sync::EntityKind::VaultRecord
+            || operation.entity_id != self.record_ref
+            || pending_id.is_some_and(|pending| pending != operation.id)
+        {
+            return false;
+        }
+        if self.revision == revision && self.pending_id() == pending_id {
+            return true;
+        }
+        self.pending_id().is_some_and(|selected| {
+            operation.id == selected
+                && revision > self.revision
+                && match pending_id {
+                    Some(pending) => pending == selected && revision <= operation.base_revision,
+                    None => operation.base_revision.checked_add(1) == Some(revision),
+                }
+        })
     }
 }
 
@@ -302,6 +336,42 @@ mod tests {
     use super::*;
     fn selection(pending: Option<&str>) -> CredentialSelection {
         CredentialSelection::new("credential".into(), 7, pending.map(str::to_owned)).unwrap()
+    }
+    #[test]
+    fn selected_original_survives_acknowledgement_but_not_a_replacement() {
+        use crate::sync::{EncryptedPayload, EntityKind, Operation};
+        let selected = selection(Some("original"));
+        let mut operation = Operation {
+            id: "original".into(),
+            device: crate::DeviceId::new("device").unwrap(),
+            entity_kind: EntityKind::VaultRecord,
+            entity_id: "credential".into(),
+            base_revision: 7,
+            idempotency_key: "original".into(),
+            payload: EncryptedPayload {
+                key_id: "key".into(),
+                nonce: [0; 12],
+                ciphertext: vec![0; 16],
+            },
+        };
+        assert!(selected.matches_record(&operation, 7, Some("original")));
+        assert!(selected.matches_record(&operation, 8, None));
+        assert!(!selected.matches_record(&operation, 9, None));
+        assert!(!selected.matches_record(&operation, 6, Some("original")));
+        // A selected successor can wait behind an already dispatched original.
+        operation.base_revision = 8;
+        assert!(selected.matches_record(&operation, 8, Some("original")));
+        assert!(selected.matches_record(&operation, 9, None));
+        assert!(!selected.matches_record(&operation, 9, Some("original")));
+        operation.id = "replacement".into();
+        assert!(!selected.matches_record(&operation, 7, Some("original")));
+        assert!(!selected.matches_record(&operation, 9, None));
+        operation.id = "original".into();
+        operation.entity_id = "another-record".into();
+        assert!(!selected.matches_record(&operation, 9, None));
+        operation.entity_id = "credential".into();
+        operation.entity_kind = EntityKind::RepositoryState;
+        assert!(!selected.matches_record(&operation, 9, None));
     }
     fn owner(id: u64, kind: GithubOwnerKind, login: &str) -> GithubOwner {
         GithubOwner {
