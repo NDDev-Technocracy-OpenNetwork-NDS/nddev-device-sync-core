@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod catalog;
+pub mod workspace;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HeadKind {
