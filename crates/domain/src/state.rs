@@ -1,5 +1,5 @@
-//! Portable encrypted device/module/account read models. Values are observations
-//! by a signing device, never an instruction to mutate a provider's own state.
+//! Portable encrypted observations and explicit owner/device intent. Stored
+//! facts and preferences never grant authority to mutate a provider's state.
 use crate::{
     DeviceId, ModuleId, Platform,
     devices::DeviceName,
@@ -18,6 +18,11 @@ pub struct Snapshot {
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum State {
+    /// Owner-wide catalog choice only. Device-local module consent and a fresh
+    /// protected-record check remain required before every provider operation.
+    GithubSource {
+        selection: Option<crate::repositories::catalog::CredentialSelection>,
+    },
     Repository {
         observation: crate::repositories::catalog::observations::RepositoryObservation,
     },
@@ -80,7 +85,10 @@ impl Snapshot {
         if !valid_entity
             || self.schema_version
                 != match (&self.data, kind) {
-                    (State::Repository { .. }, EntityKind::RepositoryState)
+                    (
+                        State::Repository { .. } | State::GithubSource { .. },
+                        EntityKind::RepositoryState,
+                    )
                     | (State::ModuleConfiguration { .. }, EntityKind::ModuleState) => 2,
                     _ => 1,
                 }
@@ -90,6 +98,12 @@ impl Snapshot {
             return Err(SyncError::Invalid);
         }
         let valid = match (&self.data, kind) {
+            (State::GithubSource { selection }, EntityKind::RepositoryState) => {
+                entity == crate::repositories::catalog::SOURCE_ENTITY_ID
+                    && selection
+                        .as_ref()
+                        .is_none_or(|value| value.validate().is_ok())
+            }
             (
                 State::Device {
                     display_name,
@@ -193,6 +207,56 @@ impl Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn source_choice_is_owner_wide_and_never_a_device_grant_or_observation() {
+        use crate::repositories::catalog::{CredentialSelection, SOURCE_ENTITY_ID};
+        let writer = DeviceId::new("device").unwrap();
+        let mut snapshot = Snapshot {
+            schema_version: 2,
+            observed_at_ms: 100,
+            data: State::GithubSource {
+                selection: Some(CredentialSelection::new("credential".into(), 7, None).unwrap()),
+            },
+        };
+        for device in [writer.clone(), DeviceId::new("other-device").unwrap()] {
+            assert!(
+                snapshot
+                    .validate(&device, EntityKind::RepositoryState, SOURCE_ENTITY_ID)
+                    .is_ok()
+            );
+        }
+        for (kind, id) in [
+            (EntityKind::ModuleState, "device:gds:configuration"),
+            (EntityKind::RepositoryState, "github:repo:1"),
+            (EntityKind::VaultRecord, SOURCE_ENTITY_ID),
+        ] {
+            assert!(snapshot.validate(&writer, kind, id).is_err());
+        }
+        snapshot.data = State::GithubSource { selection: None };
+        assert!(
+            snapshot
+                .validate(&writer, EntityKind::RepositoryState, SOURCE_ENTITY_ID)
+                .is_ok()
+        );
+        snapshot.schema_version = 1;
+        assert!(
+            snapshot
+                .validate(&writer, EntityKind::RepositoryState, SOURCE_ENTITY_ID)
+                .is_err()
+        );
+        snapshot.schema_version = 2;
+        snapshot.data = State::GithubSource {
+            selection: Some(
+                serde_json::from_str(r#"{"record_ref":"","revision":0,"pending_id":null}"#)
+                    .unwrap(),
+            ),
+        };
+        assert!(
+            snapshot
+                .validate(&writer, EntityKind::RepositoryState, SOURCE_ENTITY_ID)
+                .is_err()
+        );
+    }
     #[test]
     fn module_configuration_is_writer_scoped_and_separate_from_observations() {
         let writer = DeviceId::new("device").unwrap();
