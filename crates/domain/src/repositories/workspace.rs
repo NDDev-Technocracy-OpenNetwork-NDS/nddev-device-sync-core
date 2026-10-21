@@ -110,9 +110,7 @@ pub fn commit_decision(
     upstream_matches: bool,
 ) -> CommitDecision {
     use CommitDecision::*;
-    let block = if archived {
-        Some(SyncBlock::Archived)
-    } else if active_writer {
+    let block = if active_writer {
         Some(SyncBlock::ActiveWriter)
     } else if !status.partial_reasons.is_empty() || status.comparison == BranchComparison::Partial {
         Some(SyncBlock::Incomplete)
@@ -142,6 +140,10 @@ pub fn commit_decision(
             ahead: 0,
             behind: 0,
         } => UpToDate,
+        BranchComparison::Available {
+            ahead: _,
+            behind: 0,
+        } if archived => Blocked(SyncBlock::Archived),
         BranchComparison::Available {
             ahead: _,
             behind: 0,

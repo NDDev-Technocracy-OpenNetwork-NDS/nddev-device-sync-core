@@ -132,7 +132,21 @@ fn local_edits_locks_and_partial_reads_block_before_network() {
     );
     assert_eq!(
         commit_decision(&status, ComparisonFreshness::Cached, true, false, true),
+        CommitDecision::Fetch
+    );
+    assert_eq!(
+        commit_decision(&status, ComparisonFreshness::Fetched, true, false, true),
         CommitDecision::Blocked(SyncBlock::Archived)
+    );
+    assert_eq!(
+        commit_decision(
+            &clean(0, 1),
+            ComparisonFreshness::Fetched,
+            true,
+            false,
+            true
+        ),
+        CommitDecision::FastForward
     );
     assert_eq!(
         commit_decision(&status, ComparisonFreshness::Cached, false, false, false),
