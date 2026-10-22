@@ -17,11 +17,24 @@ pub struct CheckoutLocation {
 }
 impl CheckoutLocation {
     pub fn from_repository(repository: &RepositorySummary) -> Result<Self, ModuleError> {
+        Self::new(
+            repository.id,
+            repository.owner.id,
+            repository.owner.login.clone(),
+            repository.name.clone(),
+        )
+    }
+    pub fn new(
+        repository_id: RepositoryId,
+        owner_id: GithubAccountId,
+        owner: String,
+        repository: String,
+    ) -> Result<Self, ModuleError> {
         let location = Self {
-            repository_id: repository.id,
-            owner_id: repository.owner.id,
-            owner: repository.owner.login.clone(),
-            repository: repository.name.clone(),
+            repository_id,
+            owner_id,
+            owner,
+            repository,
         };
         location.validate()?;
         Ok(location)
