@@ -26,6 +26,11 @@ pub enum State {
     Repository {
         observation: crate::repositories::catalog::observations::RepositoryObservation,
     },
+    /// Owner-wide connection intent. Physical markers remain device-local;
+    /// this fact never grants Git I/O or duplicates the catalog per device.
+    RepositoryConnection {
+        location: crate::repositories::workspace::CheckoutLocation,
+    },
     Device {
         display_name: String,
         platform: String,
@@ -86,7 +91,9 @@ impl Snapshot {
             || self.schema_version
                 != match (&self.data, kind) {
                     (
-                        State::Repository { .. } | State::GithubSource { .. },
+                        State::Repository { .. }
+                        | State::GithubSource { .. }
+                        | State::RepositoryConnection { .. },
                         EntityKind::RepositoryState,
                     )
                     | (State::ModuleConfiguration { .. }, EntityKind::ModuleState) => 2,
@@ -179,6 +186,9 @@ impl Snapshot {
             }
             (State::Repository { observation }, EntityKind::RepositoryState) => {
                 observation.validate().is_ok() && observation.key().entity_id() == entity
+            }
+            (State::RepositoryConnection { location }, EntityKind::RepositoryState) => {
+                location.validate().is_ok() && location.connection_entity_id() == entity
             }
             _ => false,
         };
