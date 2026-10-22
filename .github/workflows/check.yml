@@ -3,6 +3,7 @@ name: NDS checks
 on:
   pull_request:
     branches: [main, dev]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -28,7 +29,7 @@ jobs:
           cargo install --locked --version 0.20.2 cargo-deny
       - name: Run the STD-0004 native Rust contract
         id: native
-        uses: NDDev-Technocracy-Standarts/std-0004-ci-cd-workflows/.github/actions/ci@55e8f06fdba354cf3c14291f49b27ecae9e5abb2 # std-0004-v0.2.0
+        uses: NDDev-Technocracy-Standarts/std-0004-ci-cd-workflows/.github/actions/ci@a77e385fcf3c1b000c38167ecac7b74bb7715b10 # std-0004-v0.3.1
       - name: Require complete native results
         if: ${{ !cancelled() }}
         env:
