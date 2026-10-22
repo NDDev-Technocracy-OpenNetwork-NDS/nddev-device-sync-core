@@ -71,3 +71,5 @@ CI uses the native Rust module of STD-0004 at the immutable action revision in
 Clippy and dependency checks; native JUnit results reject empty test runs.
 Source checks run on dev/main PR candidates. `just check` remains the local entry.
 This Git-sourced library selects source validation, with no deployment target.
+
+Release journals live in [GitHub Releases](https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core/releases).
