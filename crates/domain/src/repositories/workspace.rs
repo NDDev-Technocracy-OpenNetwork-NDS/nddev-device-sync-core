@@ -2,7 +2,7 @@
 //! Paths are relative to the installation's authorized Developer/nddev root.
 //! These observations never grant filesystem, credential or Git authority.
 use super::{BranchComparison, Changes, HeadKind, LocalGitStatus, catalog::*};
-use crate::modules::ModuleError;
+use crate::{Permission, modules::ModuleError};
 use serde::{Deserialize, Serialize};
 
 /// Stable provider identity is distinct from a mutable, portable locator.
@@ -49,6 +49,152 @@ impl CheckoutLocation {
     pub fn https_url(&self) -> String {
         format!("https://github.com/{}/{}.git", self.owner, self.repository)
     }
+    /// Recognize only explicit GitHub origins. This does not resolve SSH
+    /// aliases/configuration or authorize that transport: I/O always uses the
+    /// fixed HTTPS endpoint with its own protected credential.
+    pub fn matches_origin(&self, origin: &str) -> bool {
+        let path = origin
+            .strip_prefix("https://github.com/")
+            .or_else(|| origin.strip_prefix("git@github.com:"))
+            .or_else(|| origin.strip_prefix("ssh://git@github.com/"))
+            .or_else(|| origin.strip_prefix("ssh://git@github.com:22/"));
+        path.is_some_and(|path| {
+            path.eq_ignore_ascii_case(&self.relative_path())
+                || path.eq_ignore_ascii_case(&format!("{}.git", self.relative_path()))
+        })
+    }
+}
+
+/// A local witness, not an authorization capability. The adapter derives this
+/// from its original authenticated NDS scope; it never accepts it from a UI.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspacePrincipal {
+    pub origin: String,
+    pub tenant: String,
+    pub user: String,
+    pub device: String,
+}
+impl WorkspacePrincipal {
+    pub fn validate(&self) -> Result<(), ModuleError> {
+        if self.origin.is_empty()
+            || self.origin.len() > 2048
+            || !self.origin.bytes().all(|b| b.is_ascii_graphic())
+            || [&self.tenant, &self.user, &self.device]
+                .into_iter()
+                .any(|id| !crate::valid_identifier(id))
+        {
+            Err(ModuleError::InvalidInput)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// The encrypted NDS record and local Git marker use the same portable model.
+/// No absolute path, credential or provider success is stored in this witness.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CheckoutBinding {
+    pub id: String,
+    pub principal: WorkspacePrincipal,
+    pub location: CheckoutLocation,
+}
+impl CheckoutBinding {
+    pub fn validate(&self) -> Result<(), ModuleError> {
+        self.principal.validate()?;
+        self.location.validate()?;
+        if uuid::Uuid::parse_str(&self.id).is_ok_and(|id| !id.is_nil() && id.to_string() == self.id)
+        {
+            Ok(())
+        } else {
+            Err(ModuleError::InvalidInput)
+        }
+    }
+    pub fn entity_id(&self) -> String {
+        format!(
+            "nds:checkout:{}:{}",
+            self.principal.device,
+            self.location.repository_id.value()
+        )
+    }
+}
+
+/// Dedicated bounded Git authority; catalog/observation consent remains smaller.
+pub fn write_permissions() -> std::collections::BTreeSet<Permission> {
+    std::collections::BTreeSet::from([
+        Permission::ReadOnly,
+        Permission::CredentialStore,
+        Permission::LocalNetwork,
+        Permission::GitWrite,
+    ])
+}
+
+pub enum CheckoutPresence {
+    Missing,
+    Occupied,
+    Repository {
+        origin: String,
+        active_writer: bool,
+        binding: Option<Box<CheckoutBinding>>,
+    },
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionBlock {
+    PathOccupied,
+    WrongRemote,
+    ActiveWriter,
+    DifferentAccount,
+    DifferentRepository,
+    RelocationRequired,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectionDecision {
+    Clone,
+    Adopt,
+    AlreadyConnected,
+    Blocked(ConnectionBlock),
+}
+pub fn connection_decision(
+    principal: &WorkspacePrincipal,
+    location: &CheckoutLocation,
+    presence: &CheckoutPresence,
+) -> Result<ConnectionDecision, ModuleError> {
+    use ConnectionDecision::*;
+    principal.validate()?;
+    location.validate()?;
+    let CheckoutPresence::Repository {
+        origin,
+        active_writer,
+        binding,
+    } = presence
+    else {
+        return Ok(if matches!(presence, CheckoutPresence::Missing) {
+            Clone
+        } else {
+            Blocked(ConnectionBlock::PathOccupied)
+        });
+    };
+    if *active_writer {
+        return Ok(Blocked(ConnectionBlock::ActiveWriter));
+    }
+    if !location.matches_origin(origin) {
+        return Ok(Blocked(ConnectionBlock::WrongRemote));
+    }
+    let Some(binding) = binding else {
+        return Ok(Adopt);
+    };
+    binding.validate()?;
+    Ok(if binding.principal != *principal {
+        Blocked(ConnectionBlock::DifferentAccount)
+    } else if binding.location.repository_id != location.repository_id {
+        Blocked(ConnectionBlock::DifferentRepository)
+    } else if binding.location != *location {
+        Blocked(ConnectionBlock::RelocationRequired)
+    } else {
+        AlreadyConnected
+    })
 }
 
 fn portable_component(value: &str) -> bool {

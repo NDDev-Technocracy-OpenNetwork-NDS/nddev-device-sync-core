@@ -26,6 +26,10 @@ pub enum State {
     Repository {
         observation: crate::repositories::catalog::observations::RepositoryObservation,
     },
+    /// Device-owned filesystem witness; reading this fact never grants Git I/O.
+    RepositoryCheckout {
+        binding: crate::repositories::workspace::CheckoutBinding,
+    },
     Device {
         display_name: String,
         platform: String,
@@ -86,7 +90,9 @@ impl Snapshot {
             || self.schema_version
                 != match (&self.data, kind) {
                     (
-                        State::Repository { .. } | State::GithubSource { .. },
+                        State::Repository { .. }
+                        | State::GithubSource { .. }
+                        | State::RepositoryCheckout { .. },
                         EntityKind::RepositoryState,
                     )
                     | (State::ModuleConfiguration { .. }, EntityKind::ModuleState) => 2,
@@ -179,6 +185,11 @@ impl Snapshot {
             }
             (State::Repository { observation }, EntityKind::RepositoryState) => {
                 observation.validate().is_ok() && observation.key().entity_id() == entity
+            }
+            (State::RepositoryCheckout { binding }, EntityKind::RepositoryState) => {
+                binding.validate().is_ok()
+                    && binding.principal.device == writer.as_str()
+                    && binding.entity_id() == entity
             }
             _ => false,
         };
