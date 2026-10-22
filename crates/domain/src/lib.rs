@@ -119,6 +119,9 @@ pub enum Permission {
     LocalNetwork,
     UserService,
     Clipboard,
+    /// Bounded Git checkout changes and existing-commit synchronization.
+    /// Catalog reading and generic process execution never imply this grant.
+    GitWrite,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
