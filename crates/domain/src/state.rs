@@ -26,9 +26,10 @@ pub enum State {
     Repository {
         observation: crate::repositories::catalog::observations::RepositoryObservation,
     },
-    /// Device-owned filesystem witness; reading this fact never grants Git I/O.
-    RepositoryCheckout {
-        binding: crate::repositories::workspace::CheckoutBinding,
+    /// Owner-wide connection intent. Physical markers remain device-local;
+    /// this fact never grants Git I/O or duplicates the catalog per device.
+    RepositoryConnection {
+        location: crate::repositories::workspace::CheckoutLocation,
     },
     Device {
         display_name: String,
@@ -92,7 +93,7 @@ impl Snapshot {
                     (
                         State::Repository { .. }
                         | State::GithubSource { .. }
-                        | State::RepositoryCheckout { .. },
+                        | State::RepositoryConnection { .. },
                         EntityKind::RepositoryState,
                     )
                     | (State::ModuleConfiguration { .. }, EntityKind::ModuleState) => 2,
@@ -186,10 +187,8 @@ impl Snapshot {
             (State::Repository { observation }, EntityKind::RepositoryState) => {
                 observation.validate().is_ok() && observation.key().entity_id() == entity
             }
-            (State::RepositoryCheckout { binding }, EntityKind::RepositoryState) => {
-                binding.validate().is_ok()
-                    && binding.principal.device == writer.as_str()
-                    && binding.entity_id() == entity
+            (State::RepositoryConnection { location }, EntityKind::RepositoryState) => {
+                location.validate().is_ok() && location.connection_entity_id() == entity
             }
             _ => false,
         };

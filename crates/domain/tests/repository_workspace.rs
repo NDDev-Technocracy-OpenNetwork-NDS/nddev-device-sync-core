@@ -149,45 +149,45 @@ fn connection_preserves_account_identity_repository_identity_and_existing_paths(
     );
 }
 #[test]
-fn encrypted_checkout_state_is_a_device_fact_with_exact_entity_and_writer() {
+fn connection_intent_is_owner_wide_and_bounded_at_1024_repositories_on_32_devices() {
     use nddev_device_sync_domain::{
         DeviceId,
         state::{Snapshot, State},
         sync::EntityKind,
     };
-    let binding = binding();
-    let entity = binding.entity_id();
-    let mut state = Snapshot {
-        schema_version: 2,
-        observed_at_ms: 100,
-        data: State::RepositoryCheckout { binding },
-    };
-    let device = DeviceId::new("device").unwrap();
-    assert!(
-        state
-            .validate(&device, EntityKind::RepositoryState, &entity)
-            .is_ok()
-    );
-    assert!(
-        state
-            .validate(
-                &DeviceId::new("other").unwrap(),
-                EntityKind::RepositoryState,
-                &entity
-            )
-            .is_err()
-    );
-    assert!(
-        state
-            .validate(&device, EntityKind::RepositoryState, "github:repo:19")
-            .is_err()
-    );
-    state.schema_version = 1;
-    assert!(
-        state
-            .validate(&device, EntityKind::RepositoryState, &entity)
-            .is_err()
-    );
+    let mut ids = std::collections::BTreeSet::new();
+    for repository_id in 1..=1024 {
+        let mut location = binding().location;
+        location.repository_id = RepositoryId::new(repository_id).unwrap();
+        let entity = location.connection_entity_id();
+        let state = Snapshot {
+            schema_version: 2,
+            observed_at_ms: 100,
+            data: State::RepositoryConnection { location },
+        };
+        for device in 1..=32 {
+            assert!(
+                state
+                    .validate(
+                        &DeviceId::new(format!("device-{device}")).unwrap(),
+                        EntityKind::RepositoryState,
+                        &entity
+                    )
+                    .is_ok()
+            );
+            ids.insert(entity.clone());
+        }
+        assert!(
+            state
+                .validate(
+                    &DeviceId::new("device").unwrap(),
+                    EntityKind::RepositoryState,
+                    "github:repo:19"
+                )
+                .is_err()
+        );
+    }
+    assert_eq!(ids.len(), 1024);
 }
 #[test]
 fn portable_paths_keep_identity_across_rename_and_transfer() {

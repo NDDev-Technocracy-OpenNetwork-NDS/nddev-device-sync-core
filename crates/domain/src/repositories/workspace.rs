@@ -46,6 +46,9 @@ impl CheckoutLocation {
     pub fn collision_key(&self) -> String {
         self.relative_path().to_ascii_lowercase()
     }
+    pub fn connection_entity_id(&self) -> String {
+        connection_entity_id(self.repository_id)
+    }
     pub fn https_url(&self) -> String {
         format!("https://github.com/{}/{}.git", self.owner, self.repository)
     }
@@ -63,6 +66,10 @@ impl CheckoutLocation {
                 || path.eq_ignore_ascii_case(&format!("{}.git", self.relative_path()))
         })
     }
+}
+
+pub fn connection_entity_id(repository: RepositoryId) -> String {
+    format!("nds:connection:{}", repository.value())
 }
 
 /// A local witness, not an authorization capability. The adapter derives this
@@ -91,8 +98,9 @@ impl WorkspacePrincipal {
     }
 }
 
-/// The encrypted NDS record and local Git marker use the same portable model.
-/// No absolute path, credential or provider success is stored in this witness.
+/// Device-local Git witness over the canonical connection location. NDS keeps
+/// owner-wide connection intent, not one replicated marker per device. No
+/// absolute path, credential or provider success is stored in this witness.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CheckoutBinding {
@@ -110,13 +118,6 @@ impl CheckoutBinding {
         } else {
             Err(ModuleError::InvalidInput)
         }
-    }
-    pub fn entity_id(&self) -> String {
-        format!(
-            "nds:checkout:{}:{}",
-            self.principal.device,
-            self.location.repository_id.value()
-        )
     }
 }
 
