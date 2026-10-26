@@ -184,8 +184,9 @@ impl Release {
             return Err(Error::Source);
         }
         let app = self.sources.iter().find(|s| s.role == "desktop");
-        if !self.sources.iter().any(|s| s.repository == publisher.repository && s.commit == publisher.commit)
-            || !app.is_some_and(|s| s.repository == installed.application_repository && s.commit == self.artifact.app_source)
+        if !app.is_some_and(|s| s.repository == installed.application_repository
+            && s.repository == publisher.repository && s.commit == publisher.commit
+            && s.commit == self.artifact.app_source)
             // Desktop's app and shared native library have the same source owner.
             || self.artifact.native_source != self.artifact.app_source
         {
@@ -298,6 +299,28 @@ mod tests {
         };
         assert_eq!(r.eligible(&installed, &publisher), Ok(()));
         r.sources[1].commit = "e".repeat(40);
+        assert_eq!(r.eligible(&installed, &publisher), Err(Error::Source));
+    }
+    #[test]
+    fn publisher_cannot_bind_a_different_role_at_the_desktop_repository() {
+        let mut r = release();
+        r.sources.push(Source {
+            role: "other-package".into(),
+            repository: r.sources[0].repository.clone(),
+            commit: "b".repeat(40),
+        });
+        let approved = r.sources.clone();
+        let installed = Installed {
+            version: "1.0.0-alpha.1",
+            architecture: "x86_64",
+            data: Some(r.data),
+            approved_sources: &approved,
+            application_repository: "https://github.com/example/desktop",
+        };
+        let publisher = PublisherSource {
+            repository: "https://github.com/example/desktop",
+            commit: &"b".repeat(40),
+        };
         assert_eq!(r.eligible(&installed, &publisher), Err(Error::Source));
     }
     #[test]
