@@ -56,6 +56,7 @@ id_type!(TenantId);
 id_type!(DeviceId);
 id_type!(InvitationId);
 
+pub mod app_update;
 pub mod devices;
 pub mod identity;
 pub mod modules;
