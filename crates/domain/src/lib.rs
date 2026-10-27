@@ -109,6 +109,7 @@ pub enum ModuleCapability {
     ReadModuleHealth,
     ApplyUpdates,
     ShareClipboard,
+    ControlBrowser,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -123,6 +124,8 @@ pub enum Permission {
     /// Bounded Git checkout changes and existing-commit synchronization.
     /// Catalog reading and generic process execution never imply this grant.
     GitWrite,
+    /// Browser automation remains limited to owner-granted agent tab groups.
+    BrowserControl,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -303,6 +306,43 @@ mod tests {
             value.validate(),
             Err(DomainError::InvalidModuleDescriptor)
         ));
+    }
+
+    #[test]
+    fn browser_descriptor_uses_exact_names_and_refuses_unknown_permissions() {
+        let manifest = serde_json::json!({
+            "id": "browser-use",
+            "version": "0.0.1-alpha.1",
+            "api_version": 1,
+            "kind": "integration",
+            "platforms": ["linux", "macos", "windows"],
+            "capabilities": ["control_browser"],
+            "permissions": ["browser_control"],
+            "dependencies": []
+        });
+        let descriptor: ModuleDescriptor = serde_json::from_value(manifest.clone()).unwrap();
+        descriptor.validate().unwrap();
+        assert_eq!(
+            descriptor.capabilities,
+            BTreeSet::from([ModuleCapability::ControlBrowser])
+        );
+        assert_eq!(
+            descriptor.permissions,
+            BTreeSet::from([Permission::BrowserControl])
+        );
+        let encoded = serde_json::to_value(&descriptor).unwrap();
+        assert_eq!(encoded["capabilities"], manifest["capabilities"]);
+        assert_eq!(encoded["permissions"], manifest["permissions"]);
+
+        for permission in [
+            "BrowserControl",
+            "control_browser",
+            "browser_control_unknown",
+        ] {
+            let mut unknown = manifest.clone();
+            unknown["permissions"] = serde_json::json!(["browser_control", permission]);
+            assert!(serde_json::from_value::<ModuleDescriptor>(unknown).is_err());
+        }
     }
 
     fn descriptor(id: &str, dependencies: Vec<ModuleDependency>) -> ModuleDescriptor {

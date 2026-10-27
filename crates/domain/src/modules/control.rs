@@ -121,6 +121,69 @@ mod tests {
     }
 
     #[test]
+    fn browser_control_requires_explicit_permission_without_claiming_readiness() {
+        let required = BTreeSet::from([Permission::BrowserControl]);
+        assert_eq!(
+            Configuration::default().admit(true, true, &required),
+            Err(Readiness::Disabled)
+        );
+        for permissions in [
+            BTreeSet::new(),
+            BTreeSet::from([Permission::ReadOnly]),
+            BTreeSet::from([Permission::Clipboard]),
+            BTreeSet::from([Permission::ReadOnly, Permission::Clipboard]),
+        ] {
+            let value = Configuration {
+                enabled: true,
+                permissions,
+            };
+            assert_eq!(
+                value.admit(true, true, &required),
+                Err(Readiness::PermissionRequired)
+            );
+        }
+        let value = Configuration {
+            enabled: true,
+            permissions: required.clone(),
+        };
+        assert_eq!(value.admit(true, true, &required), Ok(()));
+        assert_eq!(
+            value.readiness(true, true, &required, None),
+            Readiness::NotChecked
+        );
+    }
+
+    #[test]
+    fn browser_revocation_and_disable_override_a_previous_ready_observation() {
+        let required = BTreeSet::from([Permission::BrowserControl]);
+        let mut value = Configuration {
+            enabled: true,
+            permissions: BTreeSet::from([
+                Permission::BrowserControl,
+                Permission::ReadOnly,
+                Permission::Clipboard,
+            ]),
+        };
+        let mut observed = observation();
+        observed.id = "browser-use".into();
+        assert_eq!(
+            value.readiness(true, true, &required, Some(&observed)),
+            Readiness::Ready
+        );
+        value.permissions.remove(&Permission::BrowserControl);
+        assert_eq!(
+            value.readiness(true, true, &required, Some(&observed)),
+            Readiness::PermissionRequired
+        );
+        value.permissions.insert(Permission::BrowserControl);
+        value.enabled = false;
+        assert_eq!(
+            value.readiness(true, true, &required, Some(&observed)),
+            Readiness::Disabled
+        );
+    }
+
+    #[test]
     fn permission_removal_and_disable_override_previous_success() {
         let required = BTreeSet::from([Permission::Clipboard]);
         let mut value = Configuration {
