@@ -62,6 +62,7 @@ pub mod identity;
 pub mod modules;
 pub mod organizations;
 pub mod repositories;
+pub mod scope;
 pub mod state;
 pub mod sync;
 pub mod vault;
