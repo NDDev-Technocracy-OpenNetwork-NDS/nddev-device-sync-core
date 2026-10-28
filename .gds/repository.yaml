@@ -4,6 +4,7 @@ repository:
   display_name: "nddev-device-sync-core"
   roles:
     - "project"
+    - "module"
   lifecycle: "active"
 provider:
   type: "github"
@@ -46,3 +47,13 @@ agent:
 release:
   mode: "version-tag"
   tag_style: "v-semver"
+
+module:
+  contract: public
+  consumption:
+  - git-submodule
+  compatibility: commit-contract
+  pin_policy: default-branch-commit
+  publication:
+    github_release: optional
+  development: embedded
