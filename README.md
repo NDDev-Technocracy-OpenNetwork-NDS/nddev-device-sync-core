@@ -10,6 +10,14 @@ The desktop, mobile, server and agent repositories consume this core through
 explicit Git revisions and the protocol repository. The core has no UI dependency and
 no knowledge of the private self-hosted estate.
 
+`domain::scope::PersonalContext` retains the initiating authenticated session,
+stable principal/personal-space identity and the exact existing user/tenant
+storage binding. It is not another grant or a ciphertext migration.
+`DeviceService::list_personal` returns that context with the bounded inventory
+and refuses provider rows from another owner. The existing `list` API uses the
+same check while retaining its original result shape. Server transactions still
+own current session/membership revalidation; Protocol owns serialized responses.
+
 Module descriptors belong to their implementing adapters. The native agent
 composes their manifests through the domain graph; core contains no parallel
 assembly registry or claims about installed provider capabilities.

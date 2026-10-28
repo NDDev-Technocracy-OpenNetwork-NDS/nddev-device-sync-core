@@ -22,6 +22,11 @@ pub struct DevicePage {
     pub next_after: Option<u16>,
 }
 
+pub struct PersonalDevicePage {
+    pub context: nddev_device_sync_domain::scope::PersonalContext,
+    pub page: DevicePage,
+}
+
 pub trait EnrollmentCrypto: IdentityCrypto {
     /// Decode a canonical, non-weak prime-order Ed25519 public key with the
     /// maintained crypto provider. Reject before allocating pending state.
@@ -72,11 +77,55 @@ pub struct DeviceService<S, C> {
     store: S,
     crypto: C,
 }
-impl<S: DeviceStore, C: EnrollmentCrypto> DeviceService<S, C> {
+impl<S: DeviceStore, C> DeviceService<S, C> {
     pub fn new(store: S, crypto: C) -> Self {
         Self { store, crypto }
     }
 
+    pub async fn list_personal(
+        &self,
+        authorization: &AuthenticatedSession,
+        after: u16,
+        limit: usize,
+        now: u64,
+    ) -> Result<PersonalDevicePage, DeviceError> {
+        let context = nddev_device_sync_domain::scope::PersonalContext::new(authorization, now)
+            .map_err(identity_error)?;
+        if after as usize > MAX_DEVICE_IDENTITIES || !(1..=MAX_DEVICE_PAGE).contains(&limit) {
+            return Err(DeviceError::InvalidInput);
+        }
+        let limit = limit.min(DEVICE_RESPONSE_ITEMS);
+        let page = self
+            .store
+            .list(context.authorization(), after, limit, now)
+            .await?;
+        if page.devices.len() > limit
+            || page
+                .devices
+                .iter()
+                .any(|device| &device.owner != context.storage_owner())
+        {
+            // A provider response cannot rebind this request's original scope.
+            return Err(DeviceError::Unavailable);
+        }
+        Ok(PersonalDevicePage { context, page })
+    }
+
+    pub async fn list(
+        &self,
+        authorization: &AuthenticatedSession,
+        after: u16,
+        limit: usize,
+        now: u64,
+    ) -> Result<DevicePage, DeviceError> {
+        Ok(self
+            .list_personal(authorization, after, limit, now)
+            .await?
+            .page)
+    }
+}
+
+impl<S: DeviceStore, C: EnrollmentCrypto> DeviceService<S, C> {
     pub async fn request(
         &self,
         authorization: &AuthenticatedSession,
@@ -137,21 +186,6 @@ impl<S: DeviceStore, C: EnrollmentCrypto> DeviceService<S, C> {
             return Err(DeviceError::InvalidInput);
         }
         self.store.complete(authorization, id, signature, now).await
-    }
-    pub async fn list(
-        &self,
-        authorization: &AuthenticatedSession,
-        after: u16,
-        limit: usize,
-        now: u64,
-    ) -> Result<DevicePage, DeviceError> {
-        active(authorization, now)?;
-        if after as usize > MAX_DEVICE_IDENTITIES || !(1..=MAX_DEVICE_PAGE).contains(&limit) {
-            return Err(DeviceError::InvalidInput);
-        }
-        self.store
-            .list(authorization, after, limit.min(DEVICE_RESPONSE_ITEMS), now)
-            .await
     }
     pub async fn revoke(
         &self,
