@@ -1,4 +1,4 @@
-//! Company membership and the narrow administrative RDS exception (ADR 0011).
+//! Independent organization membership and the narrow administrative RDS exception.
 //!
 //! Adapters must load current memberships and revalidate the authenticated actor
 //! at the same transaction boundary as the authorized mutation or grant. A UI
@@ -7,6 +7,10 @@ use crate::identity::Owner;
 
 pub mod commands;
 pub mod invitations;
+
+/// Retained memberships per principal, including removed rows. Reactivation
+/// reuses its existing row; it cannot create unbounded retained membership state.
+pub const MAX_ORGANIZATIONS_PER_PRINCIPAL: usize = 32;
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct CompanyName(String);
@@ -76,9 +80,10 @@ pub enum CompanyRole {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Membership {
-    /// The existing tenant identity is the company identity; user ownership stays
-    /// unchanged. No parallel company ID or shared company vault is introduced.
+    /// The principal's original personal storage/key binding, never the selected
+    /// organization. Several memberships may retain the same exact owner.
     pub owner: Owner,
+    pub company_id: crate::TenantId,
     pub role: CompanyRole,
     pub active: bool,
 }
@@ -124,14 +129,13 @@ impl Membership {
         }
     }
 
-    /// Vault, GDS and other personal data never inherit administrative access.
-    pub fn authorize_personal(
+    pub fn authorize_membership(
         &self,
         actor: &Owner,
-        resource_owner: &Owner,
+        company: &crate::TenantId,
     ) -> Result<(), OrganizationError> {
         self.authenticate(actor)?;
-        if actor == resource_owner {
+        if &self.company_id == company {
             Ok(())
         } else {
             Err(OrganizationError::Denied)
@@ -141,10 +145,13 @@ impl Membership {
     /// Authorizes the ownership boundary only. RDS must additionally enforce
     /// session/device validity, enabled host module, capture consent and lease.
     pub fn authorize_screen(&self, actor: &Owner, target: &Self) -> Result<(), OrganizationError> {
+        // Personal device access survives leaving an organization. The caller
+        // independently verifies this exact owner's session and device proofs.
+        if &self.owner == actor && &target.owner == actor {
+            return Ok(());
+        }
         self.authenticate(actor)?;
-        if target.active
-            && self.owner.tenant_id == target.owner.tenant_id
-            && (self.owner == target.owner || self.role == CompanyRole::Admin)
+        if target.active && self.company_id == target.company_id && self.role == CompanyRole::Admin
         {
             Ok(())
         } else {
@@ -158,7 +165,7 @@ impl Membership {
         company: &crate::TenantId,
     ) -> Result<(), OrganizationError> {
         self.authenticate(actor)?;
-        if self.role == CompanyRole::Admin && &self.owner.tenant_id == company {
+        if self.role == CompanyRole::Admin && &self.company_id == company {
             Ok(())
         } else {
             Err(OrganizationError::Denied)
@@ -175,7 +182,7 @@ impl Membership {
         change: MembershipChange,
         active_administrators: usize,
     ) -> Result<Self, OrganizationError> {
-        administrator.authorize_administration(actor, &self.owner.tenant_id)?;
+        administrator.authorize_administration(actor, &self.company_id)?;
         if active_administrators == 0 {
             return Err(OrganizationError::InvalidState);
         }
@@ -207,6 +214,7 @@ mod tests {
 
     fn member(company: &str, user: &str, role: CompanyRole, active: bool) -> Membership {
         Membership {
+            company_id: TenantId::new(company).unwrap(),
             owner: Owner {
                 tenant_id: TenantId::new(company).unwrap(),
                 user_id: UserId::new(user).unwrap(),
@@ -303,7 +311,7 @@ mod tests {
             [false, true, false, false, false],
             [false, false, true, false, false],
             [false, false, false, true, false],
-            [false, false, false, false, false],
+            [false, false, false, false, true],
         ];
         for (i, actor) in members.iter().enumerate() {
             for (j, target) in members.iter().enumerate() {
@@ -313,9 +321,9 @@ mod tests {
                 );
                 assert_eq!(
                     actor
-                        .authorize_personal(&actor.owner, &target.owner)
+                        .authorize_membership(&actor.owner, &target.company_id)
                         .is_ok(),
-                    i == j && i != 4
+                    actor.active && actor.company_id == target.company_id
                 );
             }
         }
@@ -356,7 +364,7 @@ mod tests {
         assert_eq!(promoted.owner, user.owner);
         assert_eq!(promoted.role, CompanyRole::Admin);
         assert_eq!(
-            promoted.authorize_personal(&promoted.owner, &admin.owner),
+            promoted.authorize_administration(&promoted.owner, &TenantId::new("b").unwrap()),
             Err(OrganizationError::Denied)
         );
         let removed = user
@@ -398,6 +406,76 @@ mod tests {
         assert_eq!(
             target.change(&admin, &admin.owner, MembershipChange::Remove, 0),
             Err(OrganizationError::InvalidState)
+        );
+    }
+
+    #[test]
+    fn independent_memberships_never_relabel_the_personal_owner_or_share_roles() {
+        let mut first = member("first", "principal", CompanyRole::Admin, true);
+        first.owner.tenant_id = TenantId::new("retained-storage").unwrap();
+        let second = Membership {
+            company_id: TenantId::new("second").unwrap(),
+            role: CompanyRole::User,
+            ..first.clone()
+        };
+        let actor = first.owner.clone();
+        assert!(
+            first
+                .authorize_administration(&actor, &first.company_id)
+                .is_ok()
+        );
+        assert!(
+            second
+                .authorize_membership(&actor, &second.company_id)
+                .is_ok()
+        );
+        assert_eq!(
+            first.authorize_administration(&actor, &second.company_id),
+            Err(OrganizationError::Denied)
+        );
+        assert_eq!(
+            second.authorize_administration(&actor, &second.company_id),
+            Err(OrganizationError::Denied)
+        );
+        let removed = first
+            .change(&first, &actor, MembershipChange::Remove, 2)
+            .unwrap();
+        assert_eq!(removed.owner, actor);
+        assert_eq!(second.owner, actor);
+        assert_eq!(removed.company_id, first.company_id);
+        assert!(
+            removed
+                .authorize_membership(&actor, &first.company_id)
+                .is_err()
+        );
+        assert!(
+            second
+                .authorize_membership(&actor, &second.company_id)
+                .is_ok()
+        );
+        assert!(removed.authorize_screen(&actor, &removed).is_ok());
+        let mut rebound = actor.clone();
+        rebound.tenant_id = first.company_id.clone();
+        assert!(
+            first
+                .authorize_membership(&rebound, &first.company_id)
+                .is_err()
+        );
+        // Equal identifier text in a personal and organization namespace is
+        // neither an administrative grant nor a reason to alter storage_owner.
+        let colliding = Membership {
+            company_id: TenantId::new("principal").unwrap(),
+            ..second
+        };
+        assert!(
+            colliding
+                .authorize_membership(&actor, &colliding.company_id)
+                .is_ok()
+        );
+        assert!(
+            first
+                .authorize_membership(&actor, &colliding.company_id)
+                .is_err()
         );
     }
 }
