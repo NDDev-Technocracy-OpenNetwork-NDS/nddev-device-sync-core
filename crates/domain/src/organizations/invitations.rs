@@ -19,6 +19,7 @@ pub enum InvitationStatus {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InvitationMetadata {
     pub id: InvitationId,
+    pub company_id: crate::TenantId,
     pub issuer: Owner,
     pub recipient: Owner,
     pub role: CompanyRole,
@@ -38,12 +39,13 @@ impl Invitation {
         role: CompanyRole,
         now: u64,
     ) -> Result<Self, OrganizationError> {
-        administrator.authorize_administration(actor, &recipient.tenant_id)?;
-        if actor == &recipient {
+        administrator.authorize_administration(actor, &administrator.company_id)?;
+        if actor.user_id == recipient.user_id {
             return Err(OrganizationError::InvalidInput);
         }
         Self::restore(InvitationMetadata {
             id,
+            company_id: administrator.company_id.clone(),
             issuer: actor.clone(),
             recipient,
             role,
@@ -56,8 +58,7 @@ impl Invitation {
     }
 
     pub fn restore(metadata: InvitationMetadata) -> Result<Self, OrganizationError> {
-        if metadata.issuer.tenant_id != metadata.recipient.tenant_id
-            || metadata.issuer.user_id == metadata.recipient.user_id
+        if metadata.issuer.user_id == metadata.recipient.user_id
             || metadata.expires_at_ms <= metadata.issued_at_ms
             || metadata.expires_at_ms - metadata.issued_at_ms > INVITATION_LIFETIME_MS
         {
@@ -84,6 +85,7 @@ impl Invitation {
         self.0.status = InvitationStatus::Accepted;
         Ok(Membership {
             owner: self.0.recipient.clone(),
+            company_id: self.0.company_id.clone(),
             role: self.0.role,
             active: true,
         })
@@ -105,7 +107,7 @@ impl Invitation {
             return Err(OrganizationError::InvitationUnavailable);
         }
         current_issuer
-            .authorize_administration(&self.0.issuer, &self.0.recipient.tenant_id)
+            .authorize_administration(&self.0.issuer, &self.0.company_id)
             .map_err(|_| OrganizationError::InvitationUnavailable)?;
         Ok(())
     }
@@ -118,7 +120,7 @@ impl Invitation {
         actor: &Owner,
         now: u64,
     ) -> Result<(), OrganizationError> {
-        administrator.authorize_administration(actor, &self.0.recipient.tenant_id)?;
+        administrator.authorize_administration(actor, &self.0.company_id)?;
         self.observe_expiry(now)?;
         match self.0.status {
             InvitationStatus::Pending => self.0.status = InvitationStatus::Revoked,
@@ -156,6 +158,7 @@ mod tests {
     fn issuer() -> Membership {
         Membership {
             owner: owner("company", "admin"),
+            company_id: TenantId::new("company").unwrap(),
             role: CompanyRole::Admin,
             active: true,
         }
@@ -211,6 +214,7 @@ mod tests {
             accepted,
             Membership {
                 owner: recipient.clone(),
+                company_id: TenantId::new("company").unwrap(),
                 role: CompanyRole::User,
                 active: true
             }
@@ -252,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn issuance_and_restoration_reject_cross_company_or_invalid_authority() {
+    fn issuance_and_restoration_reject_invalid_authority_and_self_invitations() {
         let admin = issuer();
         let recipient = owner("company", "recipient");
         assert!(
@@ -271,7 +275,7 @@ mod tests {
                 InvitationId::new("id").unwrap(),
                 &admin,
                 &admin.owner,
-                owner("other", "recipient"),
+                owner("other", "admin"),
                 CompanyRole::Admin,
                 1000
             )
@@ -291,7 +295,7 @@ mod tests {
         let original = pending().metadata().clone();
         for invalid in [
             InvitationMetadata {
-                recipient: owner("other", "recipient"),
+                recipient: owner("other", "admin"),
                 ..original.clone()
             },
             InvitationMetadata {
@@ -305,5 +309,36 @@ mod tests {
         ] {
             assert!(Invitation::restore(invalid).is_err());
         }
+    }
+
+    #[test]
+    fn an_existing_principal_joins_another_company_without_changing_either_owner() {
+        let mut admin = issuer();
+        admin.owner.tenant_id = TenantId::new("admin-personal-storage").unwrap();
+        let recipient = owner("recipient-personal-storage", "recipient");
+        let mut value = Invitation::issue(
+            InvitationId::new("id").unwrap(),
+            &admin,
+            &admin.owner,
+            recipient.clone(),
+            CompanyRole::User,
+            1000,
+        )
+        .unwrap();
+        assert_eq!(value.metadata().company_id, admin.company_id);
+        assert_eq!(value.metadata().issuer, admin.owner);
+        assert_eq!(value.metadata().recipient, recipient);
+        let other_company = Membership {
+            company_id: TenantId::new("other-company").unwrap(),
+            ..admin.clone()
+        };
+        assert_eq!(
+            value.prepare_authentication(&recipient, &other_company, 1001),
+            Err(OrganizationError::InvitationUnavailable)
+        );
+        let joined = value.accept(&recipient, &admin, 1001).unwrap();
+        assert_eq!(joined.owner, recipient);
+        assert_eq!(joined.company_id, admin.company_id);
+        assert_eq!(joined.role, CompanyRole::User);
     }
 }

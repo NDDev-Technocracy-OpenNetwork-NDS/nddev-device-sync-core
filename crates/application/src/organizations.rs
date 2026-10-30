@@ -6,37 +6,71 @@ use crate::{
 };
 use nddev_device_sync_domain::{
     InvitationId, UserId,
-    identity::AuthenticatedSession,
     organizations::{
         Company, CompanyRole, Membership, MembershipChange, OrganizationError,
         commands::{CommandId, DeliveryState},
         invitations::InvitationMetadata,
     },
+    scope::PersonalContext,
     sync::MAX_REVISION,
 };
 use std::future::Future;
 
 pub struct Context {
-    pub auth: AuthenticatedSession,
+    pub personal: PersonalContext,
+    pub company_id: Option<nddev_device_sync_domain::TenantId>,
+    pub expected_membership_revision: Option<u64>,
     pub signed: SignedRequest,
     pub now_ms: u64,
 }
+impl Context {
+    pub fn company(&self) -> Result<&nddev_device_sync_domain::TenantId, OrganizationError> {
+        self.company_id
+            .as_ref()
+            .ok_or(OrganizationError::InvalidInput)
+    }
+}
+pub fn authorize_personal(
+    context: &Context,
+    command: Option<&CommandId>,
+    now: u64,
+) -> Result<(), OrganizationError> {
+    active(context.personal.authorization(), &context.signed, now)
+        .map_err(OrganizationError::Authorization)?;
+    if let Some(command) = command {
+        command.validate(now)?;
+    }
+    Ok(())
+}
 pub fn authorize(
     context: &Context,
-    member: &Membership,
+    member: &Member,
     command: Option<&CommandId>,
     now: u64,
     administrative: bool,
 ) -> Result<(), OrganizationError> {
-    active(&context.auth, &context.signed, now).map_err(OrganizationError::Authorization)?;
-    let owner = &context.auth.session.owner;
-    if administrative {
-        member.authorize_administration(owner, &owner.tenant_id)?;
-    } else {
-        member.authorize_personal(owner, owner)?;
+    authorize_personal(context, command, now)?;
+    if !(1..=MAX_REVISION).contains(&member.revision) {
+        return Err(OrganizationError::InvalidState);
     }
-    if let Some(command) = command {
-        command.validate(now)?;
+    // A command cannot borrow a grant created by a later role change or rejoin.
+    // Discovery may observe the current revision; admitted scoped work captures it.
+    if context
+        .expected_membership_revision
+        .is_some_and(|revision| revision != member.revision)
+        || command.is_some() && context.expected_membership_revision.is_none()
+    {
+        return Err(OrganizationError::Denied);
+    }
+    let owner = context.personal.storage_owner();
+    if administrative {
+        member
+            .membership
+            .authorize_administration(owner, context.company()?)?;
+    } else {
+        member
+            .membership
+            .authorize_membership(owner, context.company()?)?;
     }
     Ok(())
 }
@@ -58,7 +92,7 @@ impl Member {
         if !(1..=MAX_REVISION).contains(&self.revision) {
             return Err(OrganizationError::InvalidState);
         }
-        administrator.authorize_administration(actor, &self.membership.owner.tenant_id)?;
+        administrator.authorize_administration(actor, &self.membership.company_id)?;
         if expected != self.revision {
             return Err(OrganizationError::Conflict);
         }
@@ -121,6 +155,16 @@ pub trait InvitationDelivery: Send + Sync {
     fn queue(&self, message: InvitationMessage) -> Result<(), OrganizationError>;
 }
 pub trait OrganizationStore: Send + Sync {
+    fn organizations(
+        &self,
+        context: &Context,
+    ) -> impl Future<Output = Result<Vec<Overview>, OrganizationError>> + Send;
+    fn create_company(
+        &self,
+        context: &Context,
+        command: &CommandId,
+        name: nddev_device_sync_domain::organizations::CompanyName,
+    ) -> impl Future<Output = Result<StoredResult, OrganizationError>> + Send;
     fn overview(
         &self,
         context: &Context,
@@ -208,6 +252,109 @@ mod tests {
     use super::*;
     use nddev_device_sync_domain::{TenantId, identity::Owner};
     #[test]
+    fn organization_admission_uses_original_personal_context_and_current_selected_membership() {
+        use nddev_device_sync_domain::{
+            DeviceId,
+            identity::{AuthMethod, AuthenticatedSession, ProtectedDigest, Session},
+        };
+        let owner = Owner {
+            user_id: UserId::new("principal").unwrap(),
+            tenant_id: TenantId::new("original-storage").unwrap(),
+        };
+        let auth = AuthenticatedSession {
+            session: Session::new(owner.clone(), AuthMethod::EmailOtp, 1000).unwrap(),
+            binding: ProtectedDigest([1; 32]),
+        };
+        let mut context = Context {
+            personal: PersonalContext::new(&auth, 1000).unwrap(),
+            company_id: Some(TenantId::new("first").unwrap()),
+            expected_membership_revision: Some(4),
+            signed: SignedRequest {
+                device: DeviceId::new("device").unwrap(),
+                nonce: "organization_nonce_1".into(),
+                expires_at_ms: 2000,
+                fingerprint: [2; 32],
+            },
+            now_ms: 1000,
+        };
+        let first = Membership {
+            owner: owner.clone(),
+            company_id: context.company().unwrap().clone(),
+            role: CompanyRole::Admin,
+            active: true,
+        };
+        let second = Membership {
+            company_id: TenantId::new("second").unwrap(),
+            role: CompanyRole::User,
+            ..first.clone()
+        };
+        let current = |membership| Member {
+            membership,
+            revision: 4,
+            email: None,
+        };
+        assert!(authorize(&context, &current(first.clone()), None, 1000, true).is_ok());
+        context.company_id = Some(second.company_id.clone());
+        assert_eq!(
+            authorize(&context, &current(first.clone()), None, 1000, true),
+            Err(OrganizationError::Denied)
+        );
+        assert!(authorize(&context, &current(second.clone()), None, 1000, false).is_ok());
+        assert_eq!(
+            authorize(&context, &current(second.clone()), None, 1000, true),
+            Err(OrganizationError::Denied)
+        );
+        let removed = Membership {
+            active: false,
+            ..second
+        };
+        assert_eq!(
+            authorize(&context, &current(removed.clone()), None, 1000, false),
+            Err(OrganizationError::Denied)
+        );
+        let rejoined = Member {
+            membership: Membership {
+                active: true,
+                role: CompanyRole::Admin,
+                ..removed
+            },
+            revision: 5,
+            email: None,
+        };
+        assert_eq!(
+            authorize(&context, &rejoined, None, 1000, true),
+            Err(OrganizationError::Denied)
+        );
+        let command = CommandId::new("00000000-03e8-7000-8000-000000000001".into()).unwrap();
+        context.expected_membership_revision = Some(5);
+        assert!(authorize(&context, &rejoined, Some(&command), 1000, true).is_ok());
+        context.expected_membership_revision = None;
+        assert_eq!(
+            authorize(&context, &rejoined, Some(&command), 1000, true),
+            Err(OrganizationError::Denied)
+        );
+        let invalid = Member {
+            revision: 0,
+            ..rejoined
+        };
+        assert_eq!(
+            authorize(&context, &invalid, None, 1000, false),
+            Err(OrganizationError::InvalidState)
+        );
+        context.expected_membership_revision = Some(4);
+        // The same principal and a new, even broader role cannot revive the
+        // old captured membership revision.
+        assert!(authorize_personal(&context, None, 1000).is_ok());
+        assert_eq!(context.personal.storage_owner(), &owner);
+        assert_eq!(context.personal.principal_id().as_str(), "principal");
+        context.company_id = None;
+        assert_eq!(
+            authorize(&context, &current(first.clone()), None, 1000, false),
+            Err(OrganizationError::InvalidInput)
+        );
+        assert!(authorize_personal(&context, None, 2000).is_err());
+    }
+    #[test]
     fn member_revision_fences_changes_and_preserves_last_admin_policy() {
         let owner = Owner {
             user_id: UserId::new("admin").unwrap(),
@@ -216,6 +363,7 @@ mod tests {
         let member = Member {
             membership: Membership {
                 owner: owner.clone(),
+                company_id: owner.tenant_id.clone(),
                 role: CompanyRole::Admin,
                 active: true,
             },

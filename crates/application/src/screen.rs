@@ -441,6 +441,7 @@ mod tests {
             let host = device("host");
             let membership = Membership {
                 owner: owner.clone(),
+                company_id: owner.tenant_id.clone(),
                 role: nddev_device_sync_domain::organizations::CompanyRole::User,
                 active: true,
             };
@@ -822,8 +823,7 @@ mod tests {
         c.viewer_membership.active = false;
         assert!(c.permit().is_err());
         c.viewer_membership.active = true;
-        c.host.owner.tenant_id = TenantId::new("foreign").unwrap();
-        c.host_membership.owner = c.host.owner.clone();
+        c.host_membership.company_id = TenantId::new("foreign").unwrap();
         assert!(c.permit().is_err());
         assert!(
             revalidate_view(
