@@ -10,6 +10,7 @@ pub const REPOSITORIES_PER_PAGE: usize = 25;
 pub const MAX_CATALOG_PAGES: u8 = 64;
 /// One encrypted source choice per NDS owner; device consent is independent.
 /// Outside observation keys so a preference can never become a repository fact.
+/// Frozen storage identity: retained encrypted records keep this exact key.
 pub const SOURCE_ENTITY_ID: &str = "gds:source";
 
 /// Existing vault revision and pending operation identity, not a second counter.

@@ -119,6 +119,26 @@ impl ModuleObservation {
     }
 }
 
+/// Persisted identity of a module's encrypted records. Renamed modules keep
+/// their original storage key, so retained configuration, revisions and consent
+/// carry over unchanged and older clients keep sharing the same record.
+pub fn storage_id(module_id: &str) -> &str {
+    match module_id {
+        "github" => "gds",
+        "remote" => "rds",
+        other => other,
+    }
+}
+
+/// Current module identity of a persisted record; the inverse of [`storage_id`].
+pub fn module_id(storage_id: &str) -> &str {
+    match storage_id {
+        "gds" => "github",
+        "rds" => "remote",
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,6 +151,15 @@ mod tests {
             observed_at_ms: None,
             error: None,
         }
+    }
+    #[test]
+    fn renamed_modules_keep_their_storage_identity() {
+        for (current, stored) in [("github", "gds"), ("remote", "rds"), ("sysinfo", "sysinfo")] {
+            assert_eq!(storage_id(current), stored);
+            assert_eq!(module_id(stored), current);
+            assert_eq!(storage_id(module_id(stored)), stored);
+        }
+        assert_eq!(storage_id("gds"), "gds");
     }
     #[test]
     fn query_policy_distinguishes_admission_cancellation_and_terminal_failure() {

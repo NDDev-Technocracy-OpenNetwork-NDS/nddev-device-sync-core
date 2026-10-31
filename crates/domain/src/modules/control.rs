@@ -286,7 +286,11 @@ mod tests {
             Err(Readiness::PermissionRequired)
         );
         // Git write, browser control and remote display keep explicit consent.
-        for kind in [ModuleKind::Gds, ModuleKind::Rds, ModuleKind::Integration] {
+        for kind in [
+            ModuleKind::Github,
+            ModuleKind::Remote,
+            ModuleKind::Integration,
+        ] {
             assert_eq!(
                 unset.admit_in(ControlMode::Fullauto, kind, true, true, &required),
                 Err(Readiness::Disabled)

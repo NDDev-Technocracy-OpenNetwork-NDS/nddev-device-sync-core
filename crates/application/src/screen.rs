@@ -285,7 +285,7 @@ pub fn authorize_host(
     }
     Ok(())
 }
-/// Size check only; native parsing/signature/scope remains the RDS adapter.
+/// Size check only; native parsing/signature/scope remains the remote module adapter.
 pub fn native_grant_payload(bytes: &[u8]) -> Result<(), ScreenError> {
     if bytes.is_empty() || bytes.len() > MAX_NATIVE_GRANT_BYTES {
         return Err(ScreenError::Module(
@@ -325,7 +325,7 @@ pub struct ScreenTarget {
 /// idempotency key, immutable intent/profile/expiry/result. Replay mismatch is a
 /// conflict; expiry/Ended never restarts or renews it. No success before commit.
 /// Ready rechecks the current host and both rows before storing opaque <=8KiB
-/// native bytes; delivery rechecks viewer and both rows. RDS independently verifies
+/// native bytes; delivery rechecks viewer and both rows. The remote module independently verifies
 /// issuer==host endpoint, subject/audience/display/DesktopView-only/scope/expiry.
 /// Incoming is bounded to one participant intent. End/revoke shares this lock.
 /// End authenticates the owner/participant but does not require a live grant or

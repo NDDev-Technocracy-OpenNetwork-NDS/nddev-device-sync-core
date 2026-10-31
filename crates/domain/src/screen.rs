@@ -381,6 +381,7 @@ pub fn endpoint_signing_bytes(
     {
         return Err(ModuleError::InvalidInput);
     }
+    // Frozen transcript label: existing endpoint bindings keep verifying.
     let mut bytes = b"NDS-RDS-ENDPOINT-BINDING-V2\0".to_vec();
     for field in [origin.as_bytes(), device.as_str().as_bytes()] {
         bytes.extend_from_slice(&(field.len() as u16).to_be_bytes());
@@ -408,7 +409,7 @@ pub struct ViewPermit {
 }
 impl ViewPermit {
     /// A native host signer is always this endpoint; never an external/server
-    /// issuer supplied by a wire caller. RDS I/O verifies the actual signature.
+    /// issuer supplied by a wire caller. Remote module I/O verifies the actual signature.
     pub fn native_issuer(&self) -> [u8; 32] {
         self.host_endpoint
     }

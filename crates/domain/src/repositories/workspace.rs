@@ -1,4 +1,4 @@
-//! Canonical checkout identity and existing-commit policy for the GDS adapter.
+//! Canonical checkout identity and existing-commit policy for the GitHub module adapter.
 //! Paths are relative to the installation's authorized Developer/nddev root.
 //! These observations never grant filesystem, credential or Git authority.
 use super::{BranchComparison, Changes, HeadKind, LocalGitStatus, catalog::*};
