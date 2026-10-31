@@ -1,8 +1,9 @@
-//! Enrollment rules, separate from module platform/capability declarations.
+//! Enrollment and device control policy, separate from module declarations.
 use crate::{
     DeviceId,
     identity::{AuthenticatedSession, Owner},
 };
+use std::collections::BTreeSet;
 
 pub const ENROLLMENT_LIFETIME_MS: u64 = 300_000;
 pub const ENROLLMENT_ATTEMPTS: u8 = 5;
@@ -47,6 +48,12 @@ pub enum DeviceError {
     Capacity,
     #[error("device_dependency_unavailable")]
     Unavailable,
+    /// The caller's expected policy revision is no longer current.
+    #[error("device_policy_conflict")]
+    Conflict,
+    /// The session stays valid; widening authority needs a fresh sign-in.
+    #[error("recent_authentication_required")]
+    RecentAuthenticationRequired,
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -85,6 +92,158 @@ pub struct Device {
     pub public_key: PublicDeviceKey,
     pub status: DeviceStatus,
     pub created_at_ms: u64,
+}
+
+/// Intended workload of an enrolled device (architecture "Devices and workload
+/// placement"). A profile describes intent; it never grants authority.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum DevicePurpose {
+    ServerHosting,
+    ServerDevDesktop,
+    ServerDesktop,
+    BuildDevDesktop,
+    DevDesktop,
+    Desktop,
+}
+impl DevicePurpose {
+    pub const ALL: [Self; 6] = [
+        Self::ServerHosting,
+        Self::ServerDevDesktop,
+        Self::ServerDesktop,
+        Self::BuildDevDesktop,
+        Self::DevDesktop,
+        Self::Desktop,
+    ];
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ServerHosting => "server-hosting",
+            Self::ServerDevDesktop => "server-dev-desktop",
+            Self::ServerDesktop => "server-desktop",
+            Self::BuildDevDesktop => "build-dev-desktop",
+            Self::DevDesktop => "dev-desktop",
+            Self::Desktop => "desktop",
+        }
+    }
+    pub fn parse(value: &str) -> Result<Self, DeviceError> {
+        Self::ALL
+            .into_iter()
+            .find(|purpose| purpose.as_str() == value)
+            .ok_or(DeviceError::InvalidInput)
+    }
+}
+
+/// Authenticated action-admission mode of one device (ADR 0018). It is stored
+/// with the device's owning space, never accepted as a per-command flag.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ControlMode {
+    /// The trusted actor controls its own space without an NDS checklist.
+    Fullauto,
+    /// The owner's explicit module configuration narrows admission.
+    Manual,
+}
+impl ControlMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fullauto => "fullauto",
+            Self::Manual => "manual",
+        }
+    }
+    pub fn parse(value: &str) -> Result<Self, DeviceError> {
+        match value {
+            "fullauto" => Ok(Self::Fullauto),
+            "manual" => Ok(Self::Manual),
+            _ => Err(DeviceError::InvalidInput),
+        }
+    }
+}
+
+/// Largest revision every supported JSON consumer represents exactly.
+pub const MAX_POLICY_REVISION: u64 = 9_007_199_254_740_991;
+
+/// Current purpose profiles and control mode of one device. Replacing it never
+/// changes the device ID, owner, public key or proof; only its revision moves.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DevicePolicy {
+    mode: ControlMode,
+    purposes: BTreeSet<DevicePurpose>,
+    revision: u64,
+}
+impl DevicePolicy {
+    pub fn new(
+        mode: ControlMode,
+        purposes: BTreeSet<DevicePurpose>,
+        revision: u64,
+    ) -> Result<Self, DeviceError> {
+        if purposes.is_empty() || !(1..=MAX_POLICY_REVISION).contains(&revision) {
+            return Err(DeviceError::InvalidInput);
+        }
+        Ok(Self {
+            mode,
+            purposes,
+            revision,
+        })
+    }
+    /// A device enrolled under ADR 0018 starts as a trusted general computer.
+    pub fn enrolled() -> Self {
+        Self {
+            mode: ControlMode::Fullauto,
+            purposes: BTreeSet::from([DevicePurpose::Desktop]),
+            revision: 1,
+        }
+    }
+    /// A device enrolled before control profiles keeps its explicit module
+    /// checklist; migration never widens its authority.
+    pub fn retained() -> Self {
+        Self {
+            mode: ControlMode::Manual,
+            purposes: BTreeSet::from([DevicePurpose::Desktop]),
+            revision: 1,
+        }
+    }
+    pub fn mode(&self) -> ControlMode {
+        self.mode
+    }
+    pub fn purposes(&self) -> &BTreeSet<DevicePurpose> {
+        &self.purposes
+    }
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+    /// Compare-and-set replacement by the device's own authenticated owner.
+    /// Widening manual into fullauto is a sensitive change and requires a recent
+    /// sign-in proof; narrowing or reclassifying needs only an active session.
+    /// The owning store applies this under the device row lock.
+    pub fn replace(
+        &self,
+        authorization: &AuthenticatedSession,
+        device: &Device,
+        expected_revision: u64,
+        mode: ControlMode,
+        purposes: BTreeSet<DevicePurpose>,
+        now: u64,
+    ) -> Result<Self, DeviceError> {
+        if !authorization.session.active(now)
+            || device.owner != authorization.session.owner
+            || device.status != DeviceStatus::Active
+        {
+            return Err(DeviceError::Denied);
+        }
+        if expected_revision != self.revision {
+            return Err(DeviceError::Conflict);
+        }
+        if self.mode == ControlMode::Manual
+            && mode == ControlMode::Fullauto
+            && !authorization.session.recently_authenticated(now)
+        {
+            return Err(DeviceError::RecentAuthenticationRequired);
+        }
+        let revision = self
+            .revision
+            .checked_add(1)
+            .filter(|value| *value <= MAX_POLICY_REVISION)
+            .ok_or(DeviceError::Capacity)?;
+        Self::new(mode, purposes, revision)
+    }
 }
 
 #[derive(Clone)]
@@ -253,6 +412,136 @@ mod tests {
         assert!(
             EnrollmentChallenge::new(value.id, value.device, &session, value.challenge, 100)
                 .is_err()
+        );
+    }
+    #[test]
+    fn purpose_and_mode_vocabularies_are_closed() {
+        for purpose in DevicePurpose::ALL {
+            assert_eq!(DevicePurpose::parse(purpose.as_str()), Ok(purpose));
+        }
+        for invalid in ["", "Desktop", "server_hosting", "desktop ", "admin"] {
+            assert_eq!(
+                DevicePurpose::parse(invalid),
+                Err(DeviceError::InvalidInput)
+            );
+        }
+        for mode in [ControlMode::Fullauto, ControlMode::Manual] {
+            assert_eq!(ControlMode::parse(mode.as_str()), Ok(mode));
+        }
+        assert_eq!(ControlMode::parse("auto"), Err(DeviceError::InvalidInput));
+        assert!(DevicePolicy::new(ControlMode::Manual, BTreeSet::new(), 1).is_err());
+        assert!(
+            DevicePolicy::new(
+                ControlMode::Manual,
+                BTreeSet::from([DevicePurpose::Desktop]),
+                0
+            )
+            .is_err()
+        );
+        assert!(
+            DevicePolicy::new(
+                ControlMode::Manual,
+                BTreeSet::from([DevicePurpose::Desktop]),
+                MAX_POLICY_REVISION + 1
+            )
+            .is_err()
+        );
+        assert_eq!(DevicePolicy::enrolled().mode(), ControlMode::Fullauto);
+        assert_eq!(DevicePolicy::retained().mode(), ControlMode::Manual);
+    }
+    #[test]
+    fn policy_replacement_is_owner_scoped_compare_and_set_and_widening_needs_recent_proof() {
+        let value = challenge(100);
+        let device = value.device.clone();
+        let mut auth = AuthenticatedSession {
+            session: Session::new(device.owner.clone(), AuthMethod::Passkey, 100).unwrap(),
+            binding: ProtectedDigest([1; 32]),
+        };
+        let retained = DevicePolicy::retained();
+        let servers = BTreeSet::from([DevicePurpose::ServerDevDesktop, DevicePurpose::Desktop]);
+        // Reclassification keeps manual and only advances the revision.
+        let reclassified = retained
+            .replace(&auth, &device, 1, ControlMode::Manual, servers.clone(), 101)
+            .unwrap();
+        assert_eq!(reclassified.revision(), 2);
+        assert_eq!(reclassified.purposes(), &servers);
+        assert_eq!(
+            retained.replace(&auth, &device, 2, ControlMode::Manual, servers.clone(), 101),
+            Err(DeviceError::Conflict)
+        );
+        let later = 100 + crate::identity::RECENT_AUTHENTICATION_MS + 1;
+        assert_eq!(
+            reclassified.replace(
+                &auth,
+                &device,
+                2,
+                ControlMode::Fullauto,
+                servers.clone(),
+                later
+            ),
+            Err(DeviceError::RecentAuthenticationRequired)
+        );
+        let widened = reclassified
+            .replace(
+                &auth,
+                &device,
+                2,
+                ControlMode::Fullauto,
+                servers.clone(),
+                102,
+            )
+            .unwrap();
+        assert_eq!(widened.mode(), ControlMode::Fullauto);
+        // Narrowing remains available without a fresh proof.
+        let narrowed = widened
+            .replace(
+                &auth,
+                &device,
+                3,
+                ControlMode::Manual,
+                servers.clone(),
+                later,
+            )
+            .unwrap();
+        assert_eq!(
+            (narrowed.mode(), narrowed.revision()),
+            (ControlMode::Manual, 4)
+        );
+        let mut revoked = device.clone();
+        revoked.status = DeviceStatus::Revoked;
+        assert_eq!(
+            narrowed.replace(
+                &auth,
+                &revoked,
+                4,
+                ControlMode::Manual,
+                servers.clone(),
+                103
+            ),
+            Err(DeviceError::Denied)
+        );
+        auth.session.owner.user_id = UserId::new("other").unwrap();
+        assert_eq!(
+            narrowed.replace(&auth, &device, 4, ControlMode::Manual, servers, 103),
+            Err(DeviceError::Denied)
+        );
+        let last = DevicePolicy::new(
+            ControlMode::Manual,
+            BTreeSet::from([DevicePurpose::Desktop]),
+            MAX_POLICY_REVISION,
+        )
+        .unwrap();
+        auth.session.owner = device.owner.clone();
+        assert_eq!(
+            last.replace(
+                &auth,
+                &device,
+                MAX_POLICY_REVISION,
+                ControlMode::Manual,
+                BTreeSet::from([DevicePurpose::Desktop]),
+                103
+            ),
+            Err(DeviceError::Capacity)
         );
     }
     #[test]

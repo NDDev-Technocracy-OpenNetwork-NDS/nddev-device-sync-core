@@ -27,6 +27,20 @@ pub struct PersonalDevicePage {
     pub page: DevicePage,
 }
 
+/// One device's current control policy under the original personal context.
+pub struct PersonalDevicePolicy {
+    pub context: nddev_device_sync_domain::scope::PersonalContext,
+    pub device: DeviceId,
+    pub policy: DevicePolicy,
+}
+
+/// Requested replacement; the store applies `DevicePolicy::replace`.
+pub struct PolicyChange {
+    pub expected_revision: u64,
+    pub mode: ControlMode,
+    pub purposes: std::collections::BTreeSet<DevicePurpose>,
+}
+
 pub trait EnrollmentCrypto: IdentityCrypto {
     /// Decode a canonical, non-weak prime-order Ed25519 public key with the
     /// maintained crypto provider. Reject before allocating pending state.
@@ -71,6 +85,24 @@ pub trait DeviceStore: Send + Sync {
         id: &DeviceId,
         now: u64,
     ) -> impl Future<Output = Result<(), DeviceError>> + Send;
+    /// Current policy of one device owned by both authenticated tenant/user IDs.
+    /// Revoked devices keep their last policy for inspection only.
+    fn policy(
+        &self,
+        authorization: &AuthenticatedSession,
+        id: &DeviceId,
+        now: u64,
+    ) -> impl Future<Output = Result<DevicePolicy, DeviceError>> + Send;
+    /// Recheck the exact live session under the device row lock, then apply
+    /// `DevicePolicy::replace` to the stored device and policy and persist the
+    /// result in the same transaction. Device ID, key and proof never change.
+    fn replace_policy(
+        &self,
+        authorization: &AuthenticatedSession,
+        id: &DeviceId,
+        change: PolicyChange,
+        now: u64,
+    ) -> impl Future<Output = Result<DevicePolicy, DeviceError>> + Send;
 }
 
 pub struct DeviceService<S, C> {
@@ -122,6 +154,47 @@ impl<S: DeviceStore, C> DeviceService<S, C> {
             .list_personal(authorization, after, limit, now)
             .await?
             .page)
+    }
+
+    pub async fn policy(
+        &self,
+        authorization: &AuthenticatedSession,
+        id: &DeviceId,
+        now: u64,
+    ) -> Result<PersonalDevicePolicy, DeviceError> {
+        let context = nddev_device_sync_domain::scope::PersonalContext::new(authorization, now)
+            .map_err(identity_error)?;
+        let policy = self.store.policy(context.authorization(), id, now).await?;
+        Ok(PersonalDevicePolicy {
+            context,
+            device: id.clone(),
+            policy,
+        })
+    }
+
+    pub async fn replace_policy(
+        &self,
+        authorization: &AuthenticatedSession,
+        id: &DeviceId,
+        change: PolicyChange,
+        now: u64,
+    ) -> Result<PersonalDevicePolicy, DeviceError> {
+        let context = nddev_device_sync_domain::scope::PersonalContext::new(authorization, now)
+            .map_err(identity_error)?;
+        if change.purposes.is_empty()
+            || !(1..=MAX_POLICY_REVISION).contains(&change.expected_revision)
+        {
+            return Err(DeviceError::InvalidInput);
+        }
+        let policy = self
+            .store
+            .replace_policy(context.authorization(), id, change, now)
+            .await?;
+        Ok(PersonalDevicePolicy {
+            context,
+            device: id.clone(),
+            policy,
+        })
     }
 }
 
