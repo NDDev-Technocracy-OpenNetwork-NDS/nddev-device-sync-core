@@ -1,6 +1,8 @@
 //! Device-local intent and admission, separate from provider observations.
 //! NDS consent never grants operating-system or browser permissions.
-use crate::{Permission, modules::ModuleObservation, state::Reachability};
+use crate::{
+    ModuleKind, Permission, devices::ControlMode, modules::ModuleObservation, state::Reachability,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -47,6 +49,33 @@ impl Configuration {
         }
     }
 
+    /// Effective admission under the device's authenticated control mode
+    /// (ADR 0018). Fullauto admits a supported, installed system tool without
+    /// the consent checklist; actual OS/provider restrictions still apply at
+    /// I/O. Manual keeps this configuration. Functional modules keep their
+    /// explicit configuration until their own control increment.
+    pub fn admit_in(
+        &self,
+        mode: ControlMode,
+        kind: ModuleKind,
+        supported: bool,
+        installed: bool,
+        required: &BTreeSet<Permission>,
+    ) -> Result<(), Readiness> {
+        match (mode, kind) {
+            (ControlMode::Fullauto, ModuleKind::Tool) => {
+                if !supported {
+                    Err(Readiness::Unsupported)
+                } else if !installed {
+                    Err(Readiness::NotInstalled)
+                } else {
+                    Ok(())
+                }
+            }
+            _ => self.admit(supported, installed, required),
+        }
+    }
+
     pub fn readiness(
         &self,
         supported: bool,
@@ -54,7 +83,26 @@ impl Configuration {
         required: &BTreeSet<Permission>,
         observation: Option<&ModuleObservation>,
     ) -> Readiness {
-        if let Err(reason) = self.admit(supported, installed, required) {
+        self.readiness_in(
+            ControlMode::Manual,
+            ModuleKind::Integration,
+            supported,
+            installed,
+            required,
+            observation,
+        )
+    }
+
+    pub fn readiness_in(
+        &self,
+        mode: ControlMode,
+        kind: ModuleKind,
+        supported: bool,
+        installed: bool,
+        required: &BTreeSet<Permission>,
+        observation: Option<&ModuleObservation>,
+    ) -> Readiness {
+        if let Err(reason) = self.admit_in(mode, kind, supported, installed, required) {
             return reason;
         }
         let Some(value) = observation.filter(|value| {
@@ -203,6 +251,69 @@ mod tests {
         value.enabled = false;
         assert_eq!(
             value.readiness(true, true, &required, Some(&observed)),
+            Readiness::Disabled
+        );
+    }
+
+    #[test]
+    fn fullauto_admits_installed_tools_without_the_checklist_but_not_functional_modules() {
+        let required = BTreeSet::from([Permission::Clipboard]);
+        let unset = Configuration::default();
+        let tool = ModuleKind::Tool;
+        assert_eq!(
+            unset.admit_in(ControlMode::Fullauto, tool, true, true, &required),
+            Ok(())
+        );
+        assert_eq!(
+            unset.admit_in(ControlMode::Fullauto, tool, true, false, &required),
+            Err(Readiness::NotInstalled)
+        );
+        assert_eq!(
+            unset.admit_in(ControlMode::Fullauto, tool, false, true, &required),
+            Err(Readiness::Unsupported)
+        );
+        // Manual keeps every existing explicit restriction.
+        assert_eq!(
+            unset.admit_in(ControlMode::Manual, tool, true, true, &required),
+            Err(Readiness::Disabled)
+        );
+        let enabled = Configuration {
+            enabled: true,
+            permissions: BTreeSet::new(),
+        };
+        assert_eq!(
+            enabled.admit_in(ControlMode::Manual, tool, true, true, &required),
+            Err(Readiness::PermissionRequired)
+        );
+        // Git write, browser control and remote display keep explicit consent.
+        for kind in [ModuleKind::Gds, ModuleKind::Rds, ModuleKind::Integration] {
+            assert_eq!(
+                unset.admit_in(ControlMode::Fullauto, kind, true, true, &required),
+                Err(Readiness::Disabled)
+            );
+        }
+        let mut observed = observation();
+        observed.id = "sysinfo".into();
+        assert_eq!(
+            unset.readiness_in(
+                ControlMode::Fullauto,
+                tool,
+                true,
+                true,
+                &required,
+                Some(&observed)
+            ),
+            Readiness::Ready
+        );
+        assert_eq!(
+            unset.readiness_in(
+                ControlMode::Manual,
+                tool,
+                true,
+                true,
+                &required,
+                Some(&observed)
+            ),
             Readiness::Disabled
         );
     }
