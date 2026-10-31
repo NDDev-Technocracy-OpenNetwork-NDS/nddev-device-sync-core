@@ -51,6 +51,9 @@ pub enum DeviceError {
     /// The caller's expected policy revision is no longer current.
     #[error("device_policy_conflict")]
     Conflict,
+    /// The session stays valid; widening authority needs a fresh sign-in.
+    #[error("recent_authentication_required")]
+    RecentAuthenticationRequired,
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -232,7 +235,7 @@ impl DevicePolicy {
             && mode == ControlMode::Fullauto
             && !authorization.session.recently_authenticated(now)
         {
-            return Err(DeviceError::Denied);
+            return Err(DeviceError::RecentAuthenticationRequired);
         }
         let revision = self
             .revision
@@ -476,7 +479,7 @@ mod tests {
                 servers.clone(),
                 later
             ),
-            Err(DeviceError::Denied)
+            Err(DeviceError::RecentAuthenticationRequired)
         );
         let widened = reclassified
             .replace(
