@@ -18,6 +18,18 @@ and refuses provider rows from another owner. The existing `list` API uses the
 same check while retaining its original result shape. Server transactions still
 own current session/membership revalidation; Protocol owns serialized responses.
 
+`domain::devices::DevicePolicy` holds one device's purpose profiles and its
+authenticated `fullauto`/`manual` control mode (ADR 0018). New enrollments start
+as `fullauto`/`desktop`; devices enrolled earlier are `manual`/`desktop`, so a
+migration never widens their existing module checklist. Replacement is a
+compare-and-set by the device owner; widening manual into fullauto also needs a
+recent sign-in proof. Device ID, key and proof are never changed by it.
+`Configuration::admit_in` applies the mode: fullauto admits a supported,
+installed system tool without the checklist, manual keeps it, and GDS, RDS and
+integrations keep their explicit configuration in this increment. Purposes are
+recorded intent; they grant nothing. Project-workload placement enforcement
+belongs to the later kernel launcher, not to this policy model.
+
 Module descriptors belong to their implementing adapters. The native agent
 composes their manifests through the domain graph; core contains no parallel
 assembly registry or claims about installed provider capabilities.

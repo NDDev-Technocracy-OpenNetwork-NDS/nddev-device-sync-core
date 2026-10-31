@@ -44,6 +44,34 @@ impl DeviceStore for Store {
     ) -> Result<(), DeviceError> {
         panic!("inventory must not revoke a device")
     }
+    async fn policy(
+        &self,
+        auth: &AuthenticatedSession,
+        _: &DeviceId,
+        _: u64,
+    ) -> Result<DevicePolicy, DeviceError> {
+        self.0.calls.fetch_add(1, Ordering::SeqCst);
+        *self.0.seen.lock().unwrap() = Some((auth.session.owner.clone(), auth.binding.0, 0));
+        Ok(DevicePolicy::retained())
+    }
+    async fn replace_policy(
+        &self,
+        auth: &AuthenticatedSession,
+        _: &DeviceId,
+        change: PolicyChange,
+        now: u64,
+    ) -> Result<DevicePolicy, DeviceError> {
+        self.0.calls.fetch_add(1, Ordering::SeqCst);
+        let device = self.0.response.lock().unwrap()[0].clone();
+        DevicePolicy::retained().replace(
+            auth,
+            &device,
+            change.expected_revision,
+            change.mode,
+            change.purposes,
+            now,
+        )
+    }
     async fn list(
         &self,
         auth: &AuthenticatedSession,
@@ -174,4 +202,43 @@ fn expired_authority_and_invalid_pagination_never_poll_the_store() {
         assert!(ready(service.list_personal(&auth, after, limit, now)).is_err());
     }
     assert_eq!(state.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn device_policy_uses_the_original_personal_context_and_refuses_before_storage() {
+    let auth = auth();
+    let (service, state) = service(vec![device(auth.session.owner.clone())], false);
+    let id = DeviceId::new("device").unwrap();
+    let current = ready(service.policy(&auth, &id, 100)).unwrap();
+    assert_eq!(current.context.principal_id(), &auth.session.owner.user_id);
+    assert_eq!(current.device, id);
+    assert_eq!(current.policy, DevicePolicy::retained());
+    assert_eq!(
+        state.seen.lock().unwrap().as_ref(),
+        Some(&(auth.session.owner.clone(), [7; 32], 0))
+    );
+    // Within the recent-proof window the owner may widen manual to fullauto.
+    let change = |expected_revision, purposes: Vec<DevicePurpose>| PolicyChange {
+        expected_revision,
+        mode: ControlMode::Fullauto,
+        purposes: purposes.into_iter().collect(),
+    };
+    let widened =
+        ready(service.replace_policy(&auth, &id, change(1, vec![DevicePurpose::DevDesktop]), 101))
+            .unwrap();
+    assert_eq!(widened.policy.mode(), ControlMode::Fullauto);
+    assert_eq!(widened.policy.revision(), 2);
+    let calls = state.calls.load(Ordering::SeqCst);
+    for (value, now) in [
+        (change(1, vec![]), 101),
+        (change(0, vec![DevicePurpose::Desktop]), 101),
+        (
+            change(1, vec![DevicePurpose::Desktop]),
+            auth.session.expires_at_ms,
+        ),
+    ] {
+        assert!(ready(service.replace_policy(&auth, &id, value, now)).is_err());
+    }
+    assert!(ready(service.policy(&auth, &id, auth.session.expires_at_ms)).is_err());
+    assert_eq!(state.calls.load(Ordering::SeqCst), calls);
 }
