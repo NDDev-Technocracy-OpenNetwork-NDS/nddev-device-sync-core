@@ -1,4 +1,4 @@
-//! Named caller: Vault's elected replica task. The GDS adapter owns provider
+//! Named caller: Vault's elected replica task. The GitHub module adapter owns provider
 //! I/O and the retained page; collection never creates another replica owner.
 use std::{any::Any, future::Future, pin::Pin, sync::Arc};
 

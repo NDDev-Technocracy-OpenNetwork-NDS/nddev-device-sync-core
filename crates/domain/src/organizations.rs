@@ -1,4 +1,4 @@
-//! Independent organization membership and the narrow administrative RDS exception.
+//! Independent organization membership and the narrow administrative remote-screen exception.
 //!
 //! Adapters must load current memberships and revalidate the authenticated actor
 //! at the same transaction boundary as the authorized mutation or grant. A UI
@@ -142,7 +142,7 @@ impl Membership {
         }
     }
 
-    /// Authorizes the ownership boundary only. RDS must additionally enforce
+    /// Authorizes the ownership boundary only. The remote module must additionally enforce
     /// session/device validity, enabled host module, capture consent and lease.
     pub fn authorize_screen(&self, actor: &Owner, target: &Self) -> Result<(), OrganizationError> {
         // Personal device access survives leaving an organization. The caller
