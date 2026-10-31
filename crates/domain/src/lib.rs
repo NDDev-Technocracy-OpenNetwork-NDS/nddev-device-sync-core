@@ -92,8 +92,12 @@ impl Platform {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModuleKind {
-    Gds,
-    Rds,
+    /// GitHub repository module; reads the retired `gds` value.
+    #[serde(alias = "gds")]
+    Github,
+    /// Remote screen module; reads the retired `rds` value.
+    #[serde(alias = "rds")]
+    Remote,
     Tool,
     Accounts,
     Integration,
@@ -268,6 +272,17 @@ impl ModuleGraph {
 mod tests {
     use super::*;
 
+    #[test]
+    fn module_kinds_read_retired_names_and_write_current_names() {
+        for (old, kind, current) in [
+            ("\"gds\"", ModuleKind::Github, "\"github\""),
+            ("\"rds\"", ModuleKind::Remote, "\"remote\""),
+        ] {
+            assert_eq!(serde_json::from_str::<ModuleKind>(old).unwrap(), kind);
+            assert_eq!(serde_json::from_str::<ModuleKind>(current).unwrap(), kind);
+            assert_eq!(serde_json::to_string(&kind).unwrap(), current);
+        }
+    }
     #[test]
     fn identifier_deserialization_enforces_the_constructor_contract() {
         use serde::de::value::{Error, StrDeserializer};

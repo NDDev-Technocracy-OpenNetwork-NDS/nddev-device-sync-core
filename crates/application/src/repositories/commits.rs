@@ -1,4 +1,4 @@
-//! One existing-commit cycle for the GDS native adapter. The port retains the
+//! One existing-commit cycle for the GitHub module native adapter. The port retains the
 //! checkout lock, credential/fence, cancellation and exact Git snapshot witness.
 use nddev_device_sync_domain::{modules::ModuleError, repositories::workspace::*};
 use std::future::Future;

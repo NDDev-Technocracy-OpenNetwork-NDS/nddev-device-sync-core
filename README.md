@@ -25,10 +25,15 @@ migration never widens their existing module checklist. Replacement is a
 compare-and-set by the device owner; widening manual into fullauto also needs a
 recent sign-in proof. Device ID, key and proof are never changed by it.
 `Configuration::admit_in` applies the mode: fullauto admits a supported,
-installed system tool without the checklist, manual keeps it, and GDS, RDS and
-integrations keep their explicit configuration in this increment. Purposes are
+installed system tool without the checklist, manual keeps it, and the GitHub
+and remote modules and integrations keep their explicit configuration in this increment. Purposes are
 recorded intent; they grant nothing. Project-workload placement enforcement
 belongs to the later kernel launcher, not to this policy model.
+
+The GitHub and remote modules are named `github` and `remote`; the retired `gds`
+and `rds` kinds are still read. Their encrypted records keep the original storage
+keys (`domain::modules::storage_id`), so retained configuration, revisions and
+consent carry over and older clients share the same records.
 
 Module descriptors belong to their implementing adapters. The native agent
 composes their manifests through the domain graph; core contains no parallel
@@ -69,7 +74,7 @@ belong to adapters. Restored screen metadata alone never authorizes capture;
 clients must revalidate their current Accounts lifetime before using it.
 
 `domain::organizations` owns company membership, owner-only personal access,
-the same-company administrative RDS exception and last-administrator protection.
+the same-company administrative remote-screen exception and last-administrator protection.
 The server must load current membership and lock company membership changes
 before applying these rules. The public contract is intended for the organizations
 adapter and server migration; its presence does not enable multi-user runtime
