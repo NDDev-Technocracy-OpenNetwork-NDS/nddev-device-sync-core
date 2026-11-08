@@ -91,7 +91,7 @@ just check
 0.20.2, pinned in CI. It checks formatting, locked workspace tests and doctests,
 Clippy, known dependency advisories and the reviewed license/source policy.
 
-CI uses the native Rust module of STD-0004 at the immutable action revision in
+CI runs the native Rust checks through the immutable action revision in
 `.github/workflows/check.yml`. The caller contract retains Nextest, doctests,
 Clippy and dependency checks; native JUnit results reject empty test runs.
 Source checks run on dev/main PR candidates. `just check` remains the local entry.
