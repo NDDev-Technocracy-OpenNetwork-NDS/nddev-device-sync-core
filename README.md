@@ -89,17 +89,20 @@ remain user-owned.
 ## Verification
 
 ```sh
+just setup
 just check
 ```
 
-`just check` requires cargo-nextest 0.9.148, cargo-audit 0.22.2 and cargo-deny
-0.20.2, pinned in CI. It checks formatting, locked workspace tests and doctests,
-Clippy, known dependency advisories and the reviewed license/source policy.
+`just setup` fetches the locked source inputs. `just check` checks formatting,
+dependency use and the frozen license/source policy without compilation or tests.
+On an execution host or runner, `just test` runs Clippy, Nextest's CI profile and
+doctests; `just verify` also runs the advisory audit and release build.
 
-CI runs the native Rust checks through the immutable action revision in
-`.github/workflows/check.yml`. The caller contract retains Nextest, doctests,
-Clippy and dependency checks; native JUnit results reject empty test runs.
-Source checks run on dev/main PR candidates. `just check` remains the local entry.
-This Git-sourced library selects source validation, with no deployment target.
+Both CI callers use the pinned public reusable workflow, the same Just commands
+and exact quality-tool archive/member identities. Pull requests run source/tests
+and shared merge stops; candidates and dev/main run the full verification.
+Nextest rejects empty runs and writes its actual JUnit report; job logs preserve
+the execution results. The superseded diagnostic bundle has no deployment
+consumer. This library remains consumed by immutable Git revision.
 
 Release journals live in [GitHub Releases](https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core/releases).
