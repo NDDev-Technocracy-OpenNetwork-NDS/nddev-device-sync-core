@@ -27,7 +27,11 @@ jobs:
         with:
           persist-credentials: false
       - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
+        uses: NDDev-Technocracy-OpenNetwork/nddev-ci/actions/hosted-sdk@52d8302d2272967a21fd8e3ae594205588648777 # v0.6.28
+        with:
+          rust-version: '1.99.1'
+          rust-components: rustfmt,clippy
+          tools: cargo-audit@0.22.2,cargo-deny@0.20.2,cargo-nextest@0.9.149
       - name: Prepare pinned source-check tools
         uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b
         with:
@@ -39,10 +43,6 @@ jobs:
           shared-key: native-contract
           add-job-id-key: "false"
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install pinned quality tools
-        uses: NDDev-Technocracy-OpenNetwork/nddev-ci/actions/hosted-sdk@52d8302d2272967a21fd8e3ae594205588648777 # v0.6.28
-        with:
-          tools: cargo-audit@0.22.2,cargo-deny@0.20.2,cargo-nextest@0.9.149
       - name: Prepare locked source inputs
         uses: NDDev-Technocracy-OpenNetwork/nddev-ci/actions/recipe@52d8302d2272967a21fd8e3ae594205588648777 # v0.6.28
         with:
