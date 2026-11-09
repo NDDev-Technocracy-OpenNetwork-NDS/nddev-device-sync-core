@@ -6,6 +6,11 @@ identity, device enrollment and module composition. Native credential adapters
 belong to `nddev-device-sync-accounts`. Core contains no concrete I/O, estate
 data or production endpoints.
 
+`just check` validates formatting and locked dependency licenses, sources and use without
+compiling. On an execution host or runner, `just test` runs Clippy, nextest and doctests;
+`just verify` also checks advisories and compiles the release workspace. CI retains those
+native checks and runs the same source command first.
+
 The desktop, mobile, server and agent repositories consume this core through
 explicit Git revisions and the protocol repository. The core has no UI dependency and
 no knowledge of the private self-hosted estate.
