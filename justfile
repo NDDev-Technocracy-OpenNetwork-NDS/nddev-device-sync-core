@@ -7,8 +7,8 @@ fmt-check:
     cargo fmt --all -- --check
 
 # Execution host or runner only.
-test: clippy
-    cargo nextest run --locked --workspace --jobs 4
+test: clippy build audit
+    cargo nextest run --locked --workspace --jobs 4 --profile ci
     cargo test --locked --workspace --doc --jobs 4
 
 clippy:
@@ -22,9 +22,14 @@ audit:
     cargo audit --deny warnings
 
 check: fmt-check dependencies-check
+    just --fmt --check
 
 # Execution host or runner only.
 build:
     cargo build --locked --workspace --release --jobs 4
 
 verify: check test audit build
+
+# Fetch locked source dependencies without compiling.
+setup:
+    cargo fetch --locked
