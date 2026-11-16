@@ -1,5 +1,5 @@
 [store]
-dir = ".nddev-reports/nextest"
+dir = "target/nextest"
 
 [profile.ci]
 retries = 0
