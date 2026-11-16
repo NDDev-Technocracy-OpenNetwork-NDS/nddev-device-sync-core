@@ -22,12 +22,13 @@ clippy:
 
 dependencies-check:
     cargo deny --frozen check licenses sources
-    cargo shear --locked --deny-warnings
+    cargo shear --frozen --deny-warnings
 
 audit:
     cargo audit --deny warnings
 
 check: fmt-check dependencies-check
+    just --fmt --check
 
 # Execution host or runner only.
 build:

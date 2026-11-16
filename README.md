@@ -98,11 +98,11 @@ dependency use and the frozen license/source policy without compilation or tests
 On an execution host or runner, `just test` runs Clippy, Nextest's CI profile and
 doctests; `just verify` also runs the advisory audit and release build.
 
-Both CI callers use the pinned public reusable workflow, the same Just commands
+The CI caller uses the pinned public reusable workflow, the same Just commands
 and exact quality-tool archive/member identities. Pull requests run source/tests
 and shared merge stops; candidates and dev/main run the full verification.
-Nextest rejects empty runs and writes its actual JUnit report; job logs preserve
-the execution results. The superseded diagnostic bundle has no deployment
+Nextest rejects empty runs and writes its actual CI-profile JUnit report; the
+shared job retains that report and its execution logs. The superseded diagnostic bundle has no deployment
 consumer. This library remains consumed by immutable Git revision.
 
 Release journals live in [GitHub Releases](https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core/releases).

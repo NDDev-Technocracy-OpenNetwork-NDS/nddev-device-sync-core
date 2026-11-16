@@ -1,0 +1,25 @@
+# The repository's check through the CI library nddev-ci: a pull request runs `just check`
+# and `just test`, a push to dev `just verify`, on GitHub's runners (a public repository).
+name: ci
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  check:
+    uses: NDDev-Technocracy-OpenNetwork/nddev-ci/.github/workflows/check.yml@6cf64d17c08dfc75392c55784b872fe9a6056553 # v0.6.57
+    permissions:
+      contents: read
+    with:
+      rust-version: 1.100.0
+      rust-components: clippy,rustfmt
+      tool-assets: .github/ci-tools.json
+      setup: true
+      fetch-depth: 0
+      reports: target/nextest/ci/junit.xml
