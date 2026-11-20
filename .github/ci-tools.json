@@ -3,17 +3,17 @@
   "assets": [
     {
       "repository": "EmbarkStudios/cargo-deny",
-      "tag": "0.20.2",
-      "asset": 471598214,
-      "size": 4936832,
-      "sha256": "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f",
-      "file": "cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz",
+      "tag": "0.21.0",
+      "asset": 755168773,
+      "size": 5049575,
+      "sha256": "a2170b854ff697e79e39c4c538981c9c1bdd803addbae6719a4cb66b4585a903",
+      "file": "cargo-deny.tgz",
       "members": [
         {
-          "path": "cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny",
+          "path": "cargo-deny-0.21.0-x86_64-unknown-linux-musl/cargo-deny",
           "file": "cargo-deny",
-          "size": 8844624,
-          "sha256": "b329e25933d01c36dd7c47d84ea5716694f9b7caf53a5003d45674703a8ed54a",
+          "size": 9045488,
+          "sha256": "33c3aeb3c0e154060ee6784ae4fb38dd52d51454138f0596ed86252a8b84375b",
           "executable": true
         }
       ]
