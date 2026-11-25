@@ -9,7 +9,6 @@ members = [
 edition = "2024"
 rust-version = "1.99"
 license = "AGPL-3.0-only"
-authors = ["NDDev OpenNetwork"]
 
 [workspace.dependencies]
 nddev-device-sync-domain = { path = "crates/domain", version = "0.0.12" }
